@@ -33,6 +33,8 @@ struct ExportAsSheet: View {
         }
         _options = State(initialValue: start)
         _format = State(initialValue: format == .exr && hdrRaster == nil ? .png : format)
+        // A document that began as a CMYK file goes back out in its inks.
+        if session.cameFromCMYK { _cmyk = State(initialValue: true) }
         _width = State(initialValue: raster.image.width)
         _height = State(initialValue: raster.image.height)
     }
