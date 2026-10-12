@@ -93,10 +93,15 @@ struct ExportAsSheet: View {
             Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 12) {
                 GridRow {
                     Text("Format")
-                    Picker("Format", selection: $format) {
-                        ForEach(formats, id: \.self) { Text($0.rawValue).tag($0) }
+                    // The everyday formats side by side, JPEG first; the rest (PDF, and EXR with an HDR layer) in a menu beside them,
+                    // which takes the chosen one's name.
+                    HStack(spacing: 12) {
+                        Picker("Format", selection: $format) {
+                            ForEach([ExportFormat.jpeg, .png], id: \.self) { Text($0.rawValue).tag($0) }
+                        }
+                        .pickerStyle(.segmented).labelsHidden().fixedSize()
+                        moreFormats
                     }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
                 GridRow {
                     Text("Size")
@@ -203,6 +208,22 @@ struct ExportAsSheet: View {
                 self.error = error.localizedDescription
             }
         }
+    }
+
+    /// PDF, and EXR with an HDR layer: a menu beside PNG and JPEG, blue with the chosen one's name while it's chosen,
+    /// as the selected segment beside it would be.
+    @ViewBuilder private var moreFormats: some View {
+        let others = formats.filter { $0 != .png && $0 != .jpeg }
+        let chosen = others.contains(format)
+        let menu = Menu(chosen ? format.rawValue : "More") {
+            Picker("More formats", selection: $format) {
+                ForEach(others, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.inline).labelsHidden()
+        }
+        .menuStyle(.button).fixedSize()
+        .help("Other formats: PDF\(others.contains(.exr) ? ", and EXR to keep light brighter than white" : "")")
+        if chosen { menu.buttonStyle(.borderedProminent) } else { menu.buttonStyle(.bordered) }
     }
 
     private func sizeField(_ value: Int, set: @escaping (Int) -> Void) -> some View {
