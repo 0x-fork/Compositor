@@ -965,7 +965,9 @@ final class BrushStroke {
         let image = try raster.makeImage()
         // A 16-bit layer stays one: its 16-bit pixels are still this raster's base, with the strokes over them.
         let source = isMask ? nil : layer.asset
-        let deep = source?.deep.flatMap { raster.base === (source?.raster?.base ?? source?.image) ? $0 : nil }
+        // An HDR layer's pixels, painted, are clipped to white as a 16-bit layer's, as every edit to them is for now.
+        let deep = try source?.deep.flatMap { raster.base === (source?.raster?.base ?? source?.image) ? $0 : nil }
+            .map { DeepLayer.isHDR($0) ? try DeepLayer.image($0) : $0 }
         return (ImportedImage(image: image, thumbnail: try raster.thumbnail(), name: layer.name, raster: raster, deep: deep),
                 transform(for: crop), crop)
     }

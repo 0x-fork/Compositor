@@ -69,6 +69,44 @@ nonisolated enum DeepLayer {
         return result
     }
 
+    // MARK: HDR
+
+    /// An HDR layer's pixels keep light brighter than white: half floats in extended sRGB (white is 1, highlights
+    /// above it), premultiplied, top-left rows, 8 bytes a pixel as a 16-bit layer's. Only moving, scaling and the like
+    /// keep them for now; an edit to the pixels works on them clipped to white, as a 16-bit layer.
+    static let hdrSpace = CGColorSpace(name: CGColorSpace.extendedSRGB)!
+
+    /// Whether `image` is HDR pixels (floats) rather than 16-bit ones.
+    static func isHDR(_ image: CGImage) -> Bool { image.bitmapInfo.contains(.floatComponents) }
+
+    /// `image` in the HDR layout, brighter-than-white values kept.
+    static func hdr(_ image: CGImage) throws -> CGContext {
+        let width = image.width, height = image.height
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 16, bytesPerRow: width * 8,
+            space: hdrSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
+                | CGBitmapInfo.byteOrder16Little.rawValue) else { throw ExportError.render }
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+        BrushRaster.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height), mask: false, context: context)
+        return context
+    }
+
+    /// A layer asset for an image with more than 8 bits a channel: an HDR layer when it holds light brighter than
+    /// white (a render or panorama in EXR or Radiance HDR), otherwise a 16-bit layer, as most such files are.
+    static func wideAsset(_ image: CGImage, name: String) throws -> ImportedImage {
+        guard image.bitmapInfo.contains(.floatComponents) else { return try asset(image, name: name) }
+        let context = try hdr(image)
+        guard let data = context.data else { throw ExportError.render }
+        let peak = withExtendedLifetime(context) {
+            deep_half_peak(data.assumingMemoryBound(to: UInt16.self), context.bytesPerRow, image.width, image.height)
+        }
+        // A thousandth over: a file brushing white through rounding isn't HDR.
+        guard peak > 1.001, let pixels = context.makeImage() else { return try asset(image, name: name) }
+        // Shown, as everything is, from a dithered 8-bit copy: anything brighter than white shows as white.
+        let shown = try dithered(try self.image(pixels))
+        return ImportedImage(image: shown, thumbnail: try PixelAdjust.thumbnail(of: shown), name: name, deep: pixels)
+    }
+
     /// A layer asset for 16-bit pixels: the 16-bit image, its dithered 8-bit copy and a thumbnail of it.
     static func asset(_ deep: CGImage, name: String) throws -> ImportedImage {
         let deep = try image(deep)

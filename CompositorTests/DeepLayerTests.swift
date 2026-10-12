@@ -121,7 +121,7 @@ struct DeepLayerTests {
         let project = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".comp")
         defer { try? FileManager.default.removeItem(at: project) }
         let snapshot = try #require(session.projectSnapshot())
-        #expect(snapshot.manifest.version == 12)
+        #expect(snapshot.manifest.version == ProjectManifest.current)
         try await ProjectStore.shared.save(snapshot, to: project)
         let loaded = try await ProjectStore.shared.load(from: project)
         let after = try #require(loaded.images[id]?.deep, "reopened as a 16-bit layer")
@@ -448,6 +448,104 @@ struct DeepLayerTests {
         #expect(try row(deep) == row(try DeepLayer.image(eight.image)), "the same pixels, now 16-bit")
     }
 
+    // MARK: HDR
+
+    /// An OpenEXR file as a render saves one: linear light, a gray ramp left to right with the right half rising past
+    /// white to `peak` times as bright.
+    private func exr(peak: Float) throws -> URL {
+        let width = Self.width, height = Self.height
+        var floats = [Float](repeating: 1, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let value = Float(x) / Float(width - 1) * peak, i = (y * width + x) * 4
+                floats[i] = value; floats[i + 1] = value; floats[i + 2] = value
+            }
+        }
+        let data = floats.withUnsafeBufferPointer { Data(buffer: $0) }
+        let provider = try #require(CGDataProvider(data: data as CFData))
+        let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.floatComponents.rawValue
+            | CGBitmapInfo.byteOrder32Little.rawValue)
+        let image = try #require(CGImage(width: width, height: height, bitsPerComponent: 32, bitsPerPixel: 128, bytesPerRow: width * 16,
+            space: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!, bitmapInfo: info, provider: provider, decode: nil,
+            shouldInterpolate: false, intent: .defaultIntent))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".exr")
+        let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, UTType.openEXR.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        return url
+    }
+
+    /// The brightest value in a layer's HDR pixels (1 is white).
+    private func peak(_ deep: CGImage) throws -> Float {
+        let context = try DeepLayer.hdr(deep)
+        let data = try #require(context.data)
+        return withExtendedLifetime(context) {
+            deep_half_peak(data.assumingMemoryBound(to: UInt16.self), context.bytesPerRow, deep.width, deep.height)
+        }
+    }
+
+    /// A render brighter than white comes in as an HDR layer: its highlights kept, shown as plain white.
+    @Test func exrHighlightsComeInAsAnHDRLayer() async throws {
+        let url = try exr(peak: 4)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = EditorSession()
+        await session.importImages([url])
+        let layer = try #require(session.activeLayer)
+        let asset = try #require(layer.asset)
+        #expect(asset.isHDR && layer.depthLabel == "HDR")
+        // Linear 4 is about 1.8 in extended sRGB's gamma-encoded terms.
+        let brightest = try peak(try #require(asset.deep))
+        #expect(brightest > 1.5, "highlights kept: \(brightest)")
+        #expect(try row(asset.image).last! == 65535, "shown as white")
+    }
+
+    /// Floats that never pass white are an ordinary 16-bit layer.
+    @Test func exrWithinWhiteComesInAsSixteenBits() async throws {
+        let url = try exr(peak: 1)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = EditorSession()
+        await session.importImages([url])
+        let asset = try #require(session.activeLayer?.asset)
+        #expect(asset.deep != nil && !asset.isHDR && session.activeLayer?.depthLabel == "16-Bits")
+    }
+
+    /// Saved, an HDR layer is an EXR in the project, and comes back with its highlights; older versions can't hold one.
+    @Test func hdrLayersSaveAsEXRAndReopen() async throws {
+        let url = try exr(peak: 4)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = EditorSession()
+        await session.importImages([url])
+        let id = try #require(session.activeLayerID)
+        let before = try peak(try #require(session.activeLayer?.asset?.deep))
+        let snapshot = try #require(session.projectSnapshot())
+        #expect(snapshot.manifest.layers.first?.imageFile == "\(id.uuidString).exr")
+        let project = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".comp")
+        defer { try? FileManager.default.removeItem(at: project) }
+        try await ProjectStore.shared.save(snapshot, to: project)
+        let loaded = try await ProjectStore.shared.load(from: project)
+        let asset = try #require(loaded.images[id])
+        #expect(asset.isHDR)
+        let after = try peak(try #require(asset.deep))
+        #expect(abs(after - before) < 0.01, "highlights kept: \(before) then \(after)")
+        var older = snapshot.manifest
+        older.version = 12
+        await #expect(throws: (any Error).self) { try await ProjectStore.shared.save(ProjectSnapshot(manifest: older, images: snapshot.images), to: project) }
+    }
+
+    /// For now an edit to an HDR layer's pixels works on them clipped to white: the layer is 16-bit after. Moving or
+    /// flipping it leaves its pixels alone, and it stays HDR.
+    @Test func editingAnHDRLayerClipsItToSixteenBits() async throws {
+        let url = try exr(peak: 4)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = EditorSession()
+        await session.importImages([url])
+        session.flipLayers(horizontally: true)
+        #expect(session.activeLayer?.asset?.isHDR == true, "flipped, still HDR")
+        await session.invertPixels()
+        let asset = try #require(session.activeLayer?.asset)
+        #expect(asset.deep != nil && !asset.isHDR && session.activeLayer?.depthLabel == "16-Bits")
+    }
+
     /// A version-11 project can't carry 16-bit pixels: older builds would misread them.
     @Test func olderVersionsCannotHoldSixteenBitImages() async throws {
         let (session, url) = try await importedSession()
@@ -456,7 +554,7 @@ struct DeepLayerTests {
         defer { try? FileManager.default.removeItem(at: project) }
         try await ProjectStore.shared.save(try #require(session.projectSnapshot()), to: project)
         let manifest = project.appendingPathComponent("manifest.json")
-        let text = try String(contentsOf: manifest, encoding: .utf8).replacingOccurrences(of: "\"version\" : 12", with: "\"version\" : 11")
+        let text = try String(contentsOf: manifest, encoding: .utf8).replacingOccurrences(of: "\"version\" : \(ProjectManifest.current)", with: "\"version\" : 11")
         try text.write(to: manifest, atomically: true, encoding: .utf8)
         await #expect(throws: (any Error).self) { try await ProjectStore.shared.load(from: project) }
     }

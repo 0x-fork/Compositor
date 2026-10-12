@@ -782,7 +782,8 @@ private final class LayerCell: NSTableCellView, NSTextFieldDelegate {
     private let thumbnail = LayerThumbnailButton()
     private let maskThumbnail = LayerThumbnailButton()
     private let disabledMaskMark = MaskDisabledMark(labelWithString: "╱")
-    /// "16-Bits" after the size of a layer keeping 16 bits a channel (`DeepLayer`); gone once it's rasterized to 8.
+    /// "16-Bits" or "HDR" after the size of a layer keeping more than 8 bits a channel (`DeepLayer`); gone once it's
+    /// rasterized to 8.
     private let depthTag = LayerTag()
     /// Holds the tag inside the row while it shows; hidden, it gives its room back to the size.
     private var depthTagFits: NSLayoutConstraint!
@@ -859,7 +860,6 @@ private final class LayerCell: NSTableCellView, NSTextFieldDelegate {
         disabledMaskMark.font = .systemFont(ofSize: 32, weight: .medium)
         disabledMaskMark.textColor = .systemRed
         disabledMaskMark.isHidden = true
-        depthTag.toolTip = "16-bit layer: keeps 16 bits a channel"
         depthTag.isHidden = true
         nameLabel.lineBreakMode = .byTruncatingTail
         // One line, whatever the name holds: a text layer named after a paragraph would otherwise grow the row.
@@ -999,6 +999,8 @@ private final class LayerCell: NSTableCellView, NSTextFieldDelegate {
         if !renaming { nameLabel.stringValue = (layer.maskSourceID == nil ? "" : "↳ ") + layer.name }
         dimensions.stringValue = layer.liveText != nil ? "Text · Double-click to edit" : layer.adjustment != nil ? "Adjustment · Double-click to edit" : layer.isGroup ? "Folder" : layer.sizeLabel
         depthTag.text = layer.depthLabel ?? ""
+        depthTag.toolTip = layer.asset?.isHDR == true ? "HDR layer: keeps light brighter than white, shown as white"
+                                                      : "16-bit layer: keeps 16 bits a channel"
         depthTag.isHidden = layer.depthLabel == nil || layer.maskSourceID != nil
         depthTagFits.isActive = !depthTag.isHidden
         if let source = layer.maskSourceID {
@@ -1390,7 +1392,7 @@ private final class EyeSwipeButton: NSButton {
         }
     }
 }
-/// A small rounded tag after a layer's size, naming something about its pixels ("16-Bits"). Clicks go to the row.
+/// A small rounded tag after a layer's size, naming something about its pixels ("16-Bits", "HDR"). Clicks go to the row.
 private final class LayerTag: NSView {
     var text = "" { didSet { if text != oldValue { invalidateIntrinsicContentSize(); needsDisplay = true } } }
     private var attributed: NSAttributedString {
@@ -1431,8 +1433,10 @@ extension ImageLayer {
         return text + " · " + percent.formatted(.number.precision(.fractionLength(0...1))) + "%"
     }
 
-    /// The tag after the size of a layer keeping 16 bits a channel (`DeepLayer`); nil once it's rasterized to 8.
+    /// The tag after the size of a layer keeping 16 bits a channel, or light brighter than white (`DeepLayer`); nil
+    /// once it's rasterized to 8.
     var depthLabel: String? {
-        asset?.deep == nil || liveText != nil || adjustment != nil || isGroup ? nil : "16-Bits"
+        guard let asset, asset.deep != nil, liveText == nil, adjustment == nil, !isGroup else { return nil }
+        return asset.isHDR ? "HDR" : "16-Bits"
     }
 }

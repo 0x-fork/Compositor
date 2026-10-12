@@ -201,3 +201,34 @@ void deep_cube_apply(uint16_t *pixels, size_t stride, size_t width, size_t heigh
         }
     });
 }
+
+// A half float's value (IEEE 754 binary16), portably: Intel builds have no half type to lean on.
+static inline float deep_half(uint16_t bits) {
+    uint32_t sign = (uint32_t)(bits >> 15) << 31, exponent = (bits >> 10) & 0x1f, mantissa = bits & 0x3ff;
+    union { uint32_t u; float f; } out;
+    if (exponent == 0) {
+        // Zero or subnormal: mantissa × 2⁻²⁴.
+        float value = (float)mantissa * (1.0f / 16777216.0f);
+        return sign ? -value : value;
+    }
+    if (exponent == 31) out.u = sign | 0x7f800000u | (mantissa << 13);
+    else out.u = sign | ((exponent + 112) << 23) | (mantissa << 13);
+    return out.f;
+}
+
+float deep_half_peak(const uint16_t *pixels, size_t stride, size_t width, size_t height) {
+    float peak = 0;
+    for (size_t y = 0; y < height; ++y) {
+        const uint16_t *row = (const uint16_t *)((const uint8_t *)pixels + y * stride);
+        for (size_t x = 0; x < width; ++x) {
+            const uint16_t *p = row + x * 4;
+            float alpha = deep_half(p[3]);
+            if (!(alpha > 0)) continue;
+            for (int c = 0; c < 3; ++c) {
+                float value = deep_half(p[c]) / alpha;
+                if (value > peak && value < INFINITY) peak = value;
+            }
+        }
+    }
+    return peak;
+}
