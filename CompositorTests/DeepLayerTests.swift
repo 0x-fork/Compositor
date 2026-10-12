@@ -532,18 +532,103 @@ struct DeepLayerTests {
         await #expect(throws: (any Error).self) { try await ProjectStore.shared.save(ProjectSnapshot(manifest: older, images: snapshot.images), to: project) }
     }
 
-    /// For now an edit to an HDR layer's pixels works on them clipped to white: the layer is 16-bit after. Moving or
-    /// flipping it leaves its pixels alone, and it stays HDR.
-    @Test func editingAnHDRLayerClipsItToSixteenBits() async throws {
+    /// An imported HDR render (linear light up to 4× white), with its brightest value.
+    private func hdrSession() async throws -> (EditorSession, URL, Float) {
         let url = try exr(peak: 4)
-        defer { try? FileManager.default.removeItem(at: url) }
         let session = EditorSession()
         await session.importImages([url])
-        session.flipLayers(horizontally: true)
-        #expect(session.activeLayer?.asset?.isHDR == true, "flipped, still HDR")
-        await session.invertPixels()
+        return (session, url, try peak(try #require(session.activeLayer?.asset?.deep)))
+    }
+
+    /// Exposure turned down on an HDR layer works on its full range exactly: the highlights come down into view rather
+    /// than having been clipped. One stop down, linear 4 becomes 2: still brighter than white.
+    @Test func exposureBringsHighlightsIntoView() async throws {
+        let (session, url, before) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        session.beginFilter(.exposure)
+        var settings = FilterSettings()
+        settings.exposure.exposure = -1
+        session.updateFilter(settings, preview: true)
+        await session.commitFilter()
         let asset = try #require(session.activeLayer?.asset)
-        #expect(asset.deep != nil && !asset.isHDR && session.activeLayer?.depthLabel == "16-Bits")
+        #expect(asset.isHDR, "still brighter than white")
+        let after = try peak(try #require(asset.deep))
+        // Linear 2 in extended sRGB's encoding (white is 1).
+        let expected = Float(1.055 * pow(2, 1 / 2.4) - 0.055)
+        #expect(abs(after - expected) < 0.01, "linear 4 to 2: \(before) became \(after), expected \(expected)")
+        // Part of what showed as white now shows: values between 1 and 2 times white came down within it.
+        let shown = try row(asset.image)
+        #expect(shown.filter { $0 == 65535 }.count < Self.width / 2, "fewer pixels at white")
+    }
+
+    /// Levels pulling white down dims an HDR layer's highlights in proportion rather than clipping them.
+    @Test func levelsDimsHighlightsInProportion() async throws {
+        let (session, url, before) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        session.beginLevels()
+        var settings = LevelsSettings()
+        settings.ranges[0].outputWhite = 127.5
+        session.updateLevels(settings, preview: true)
+        await session.commitLevels()
+        let after = try peak(try #require(session.activeLayer?.asset?.deep))
+        #expect(abs(after - before / 2) < 0.02, "halved: \(before) became \(after)")
+    }
+
+    /// Blur, Hue/Saturation, a brush stroke and a merge all keep an HDR layer HDR, its highlights where they were.
+    @Test func editsKeepHDRLayersHDR() async throws {
+        let (session, url, before) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        func kept(_ step: String) throws {
+            let asset = try #require(session.activeLayer?.asset)
+            #expect(asset.isHDR, "\(step) kept the layer HDR")
+            let now = try peak(try #require(asset.deep))
+            #expect(abs(now - before) < 0.05, "\(step) kept the highlights: \(before) became \(now)")
+        }
+        session.beginFilter(.gaussianBlur)
+        session.updateFilter(FilterSettings(radius: 1), preview: true)
+        await session.commitFilter()
+        try kept("Gaussian Blur")
+        session.beginHueSaturation()
+        session.updateHueSaturation(HueSaturationSettings(saturation: 40), preview: true)
+        await session.commitHueSaturation()
+        try kept("Hue/Saturation")
+        session.selectTool(.brush)
+        session.brushSettings = BrushSettings(diameter: 4, hardness: 1, red: 0, green: 0, blue: 0)
+        session.beginBrush(at: CGPoint(x: 10, y: 4))
+        session.continueBrush(at: CGPoint(x: 14, y: 4))
+        await session.finishBrush()
+        try kept("painting")
+        session.addBlankLayer()
+        session.beginBrush(at: CGPoint(x: 20, y: 4))
+        session.continueBrush(at: CGPoint(x: 24, y: 4))
+        await session.finishBrush()
+        session.mergeLayers()
+        try kept("merging")
+    }
+
+    /// A blur's preview on an HDR layer is made from its HDR pixels, as OK makes the result, so the two look the same:
+    /// made from the copy clipped to white, the preview's glow was far fainter than the one OK left.
+    @Test(arguments: [FilterKind.gaussianBlur, .motionBlur])
+    func hdrBlurPreviewsMatchTheResult(kind: FilterKind) async throws {
+        let (session, url, _) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        session.beginFilter(kind)
+        var settings = FilterSettings(radius: 6)
+        settings.distance = 20
+        session.updateFilter(settings, preview: true)
+        let edit = try #require(session.filterEdit)
+        let hdr = try #require(edit.hdrPreviewSource, "previewed from the HDR pixels")
+        let preview = try DeepLayer.dithered(try PixelFilter.previewHDR(edit.previewJob, from: hdr))
+        let clipped = try DeepLayer.image(try PixelFilter.run(edit.previewJob))
+        await session.commitFilter()
+        let result = try #require(session.activeLayer?.asset?.image)
+        #expect(preview.width == result.width && preview.height == result.height)
+        func mean(_ a: CGImage, _ b: CGImage) throws -> Double {
+            let x = try row(a), y = try row(b)
+            return zip(x, y).map { abs(Double($0) - Double($1)) }.reduce(0, +) / Double(x.count) / 257
+        }
+        let matched = try mean(preview, result), before = try mean(clipped, result)
+        #expect(matched < 1.5 && matched < before / 3, "\(kind): \(matched) steps off the result, \(before) from the clipped copy")
     }
 
     /// A version-11 project can't carry 16-bit pixels: older builds would misread them.
