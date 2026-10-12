@@ -276,6 +276,21 @@ extension EditorSession {
         return layer.liveText == nil && layer.adjustment == nil && !layer.isGroup
     }
 
+    /// An HDR layer's Convert to 16-Bit, as one undo step: its pixels clipped to white and kept at 16 bits, more finely
+    /// than half floats hold them, once its highlights have been brought into range.
+    func convertHDRToSixteenBit() {
+        guard canConvertLayerDepth, let index = document?.layers.firstIndex(where: { $0.id == activeLayerID }),
+              let asset = document?.layers[index].asset, asset.isHDR else { return }
+        let converted: ImportedImage
+        do {
+            guard let deep = try DeepLayer.flattened(asset) else { return }
+            converted = try DeepLayer.asset(try DeepLayer.image(deep), name: asset.name)
+        } catch { brushError = error.localizedDescription; return }
+        beginEdit("Convert to 16-Bit")
+        document?.layers[index].asset = converted
+        endEdit()
+    }
+
     /// The Layers panel's Convert to 16-Bit / Convert to 8-Bit, as one undo step. To 16 bits the pixels stay as they
     /// are and everything after keeps the extra precision (a blank layer becomes one to paint gradients on); to 8 bits
     /// they're dithered down, halving the layer's memory and file size.

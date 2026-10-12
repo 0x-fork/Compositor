@@ -50,7 +50,7 @@ struct DeepLayerTests {
         let deep = try #require(asset.deep, "the layer keeps its 16-bit pixels")
         #expect(deep.bitsPerComponent == 16 && asset.image.bitsPerComponent == 8)
         #expect(Set(try row(deep)).count > 200, "the ramp's fine steps are all there")
-        #expect(session.activeLayer?.depthLabel == "16-Bits")
+        #expect(session.activeLayer?.depthLabel == "16-Bit")
     }
 
     /// Levels stretching the ramp's four steps across the whole range: the 16-bit layer comes out a smooth ramp,
@@ -185,7 +185,7 @@ struct DeepLayerTests {
         await session.finishBrush()
         let asset = try #require(session.activeLayer?.asset)
         #expect(asset.raster != nil && asset.deep != nil, "painted, and still 16-bit")
-        #expect(session.activeLayer?.depthLabel == "16-Bits")
+        #expect(session.activeLayer?.depthLabel == "16-Bit")
         let whole = try #require(try DeepLayer.flattened(asset))
         let values = try row(whole)
         #expect(values[15] > values[200], "the stroke is in: red painted at the left")
@@ -415,7 +415,7 @@ struct DeepLayerTests {
         session.addBlankLayer()
         #expect(session.activeLayer?.asset == nil && session.canConvertLayerDepth)
         session.convertLayerDepth()
-        #expect(session.activeLayer?.depthLabel == "16-Bits")
+        #expect(session.activeLayer?.depthLabel == "16-Bit")
         // A gentle gradient: black to a dark gray, only 16 8-bit levels across the canvas.
         session.foregroundColor = .black
         session.backgroundColor = PaletteColor(red: 16 / 255, green: 16 / 255, blue: 16 / 255)
@@ -506,7 +506,7 @@ struct DeepLayerTests {
         let session = EditorSession()
         await session.importImages([url])
         let asset = try #require(session.activeLayer?.asset)
-        #expect(asset.deep != nil && !asset.isHDR && session.activeLayer?.depthLabel == "16-Bits")
+        #expect(asset.deep != nil && !asset.isHDR && session.activeLayer?.depthLabel == "16-Bit")
     }
 
     /// Saved, an HDR layer is an EXR in the project, and comes back with its highlights; older versions can't hold one.
@@ -698,6 +698,18 @@ struct DeepLayerTests {
         renderer.context.render(texture, toBitmap: &out, rowBytes: 16,
                                 bounds: CGRect(x: shown.width - 1, y: 0, width: 1, height: 1), format: .RGBAf, colorSpace: DeepLayer.hdrSpace)
         #expect(abs(out[0] - before) < 0.02, "the brightest value \(before) reached the GPU as \(out[0])")
+    }
+
+    /// An HDR layer converts to 16 bits: clipped to white, then a 16-bit layer; undo brings the HDR back.
+    @Test func hdrLayersConvertToSixteenBits() async throws {
+        let (session, url, _) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        session.convertHDRToSixteenBit()
+        let asset = try #require(session.activeLayer?.asset)
+        #expect(asset.deep != nil && !asset.isHDR && session.activeLayer?.depthLabel == "16-Bit")
+        #expect(try row(try #require(asset.deep)).last == 65535, "highlights clipped to white")
+        session.undo()
+        #expect(session.activeLayer?.asset?.isHDR == true)
     }
 
     /// A version-11 project can't carry 16-bit pixels: older builds would misread them.

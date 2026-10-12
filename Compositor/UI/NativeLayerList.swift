@@ -75,9 +75,10 @@ struct NativeLayerList: NSViewRepresentable {
             if old.map(\.id) != next.map(\.id) {
                 table.reloadData()
             } else {
-                // Selection never reloads cells or recreates thumbnails.
+                // Selection never reloads cells or recreates thumbnails. A depth change can keep the very same picture
+                // (Convert to 16-Bit on an 8-bit layer), so its tag is compared too.
                 let changed = IndexSet(next.indices.filter {
-                    editableChanged || expansionChanged || (old[$0].name != next[$0].name || old[$0].isVisible != next[$0].isVisible || old[$0].size != next[$0].size || old[$0].parentID != next[$0].parentID || old[$0].isGroup != next[$0].isGroup || old[$0].asset?.image !== next[$0].asset?.image || (old[$0].liveText != nil) != (next[$0].liveText != nil) || old[$0].effects != next[$0].effects || old[$0].mask != next[$0].mask || old[$0].maskSourceID != next[$0].maskSourceID) || previousDetails[next[$0].id]?.depth != rowDetails[next[$0].id]?.depth || previousDetails[next[$0].id]?.visible != rowDetails[next[$0].id]?.visible
+                    editableChanged || expansionChanged || (old[$0].name != next[$0].name || old[$0].isVisible != next[$0].isVisible || old[$0].size != next[$0].size || old[$0].parentID != next[$0].parentID || old[$0].isGroup != next[$0].isGroup || old[$0].asset?.image !== next[$0].asset?.image || old[$0].depthLabel != next[$0].depthLabel || (old[$0].liveText != nil) != (next[$0].liveText != nil) || old[$0].effects != next[$0].effects || old[$0].mask != next[$0].mask || old[$0].maskSourceID != next[$0].maskSourceID) || previousDetails[next[$0].id]?.depth != rowDetails[next[$0].id]?.depth || previousDetails[next[$0].id]?.visible != rowDetails[next[$0].id]?.visible
                 })
                 let resized = IndexSet(next.indices.filter { (old[$0].effects?.kinds.count ?? 0) != (next[$0].effects?.kinds.count ?? 0) })
                 // Adding or removing an effect only changes how tall a row is. Left to AppKit that is animated, and
@@ -188,6 +189,13 @@ struct NativeLayerList: NSViewRepresentable {
             let depthItem = NSMenuItem(title: depthTitle, action: #selector(convertDepthAction), keyEquivalent: "")
             depthItem.target = self
             depthItem.isEnabled = validateMenuItem(depthItem)
+            // An HDR layer can go to 16 bits as well as to 8.
+            if session.activeLayer?.asset?.isHDR == true {
+                let sixteenItem = NSMenuItem(title: "Convert to 16-Bit", action: #selector(convertHDRToSixteenAction), keyEquivalent: "")
+                sixteenItem.target = self
+                sixteenItem.isEnabled = validateMenuItem(sixteenItem)
+                menu.addItem(sixteenItem)
+            }
             menu.addItem(depthItem)
 
             menu.addItem(NSMenuItem.separator())
@@ -257,7 +265,7 @@ struct NativeLayerList: NSViewRepresentable {
                 return session.canEditLayers && session.activeLayer?.parentID != nil
             case #selector(mergeLayersAction):
                 return session.canMergeLayers
-            case #selector(convertDepthAction):
+            case #selector(convertDepthAction), #selector(convertHDRToSixteenAction):
                 return session.canConvertLayerDepth
             case #selector(addWhiteMaskAction), #selector(addBlackMaskAction):
                 return session.canEditMask && session.activeLayer?.mask == nil
@@ -312,6 +320,10 @@ struct NativeLayerList: NSViewRepresentable {
 
         @objc func convertDepthAction(_ sender: Any?) {
             session.convertLayerDepth()
+        }
+
+        @objc func convertHDRToSixteenAction(_ sender: Any?) {
+            session.convertHDRToSixteenBit()
         }
 
         @objc func addWhiteMaskAction(_ sender: Any?) {
@@ -782,7 +794,7 @@ private final class LayerCell: NSTableCellView, NSTextFieldDelegate {
     private let thumbnail = LayerThumbnailButton()
     private let maskThumbnail = LayerThumbnailButton()
     private let disabledMaskMark = MaskDisabledMark(labelWithString: "╱")
-    /// "16-Bits" or "HDR" after the size of a layer keeping more than 8 bits a channel (`DeepLayer`); gone once it's
+    /// "16-Bit" or "HDR" after the size of a layer keeping more than 8 bits a channel (`DeepLayer`); gone once it's
     /// rasterized to 8.
     private let depthTag = LayerTag()
     /// Holds the tag inside the row while it shows; hidden, it gives its room back to the size.
@@ -1392,7 +1404,7 @@ private final class EyeSwipeButton: NSButton {
         }
     }
 }
-/// A small rounded tag after a layer's size, naming something about its pixels ("16-Bits", "HDR"). Clicks go to the row.
+/// A small rounded tag after a layer's size, naming something about its pixels ("16-Bit", "HDR"). Clicks go to the row.
 private final class LayerTag: NSView {
     var text = "" { didSet { if text != oldValue { invalidateIntrinsicContentSize(); needsDisplay = true } } }
     private var attributed: NSAttributedString {
@@ -1437,6 +1449,6 @@ extension ImageLayer {
     /// once it's rasterized to 8.
     var depthLabel: String? {
         guard let asset, asset.deep != nil, liveText == nil, adjustment == nil, !isGroup else { return nil }
-        return asset.isHDR ? "HDR" : "16-Bits"
+        return asset.isHDR ? "HDR" : "16-Bit"
     }
 }
