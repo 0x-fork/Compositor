@@ -119,6 +119,25 @@ nonisolated enum DeepLayer {
         return image
     }
 
+    /// An HDR layer whole, for the canvas to draw with its highlights: its pixels, or once it's painted, those with the
+    /// paint laid on (`flattened`), made once per version of the layer and kept for the last few, as the canvas asks
+    /// every frame. Nil for any other layer.
+    static func canvasImage(_ asset: ImportedImage) -> CGImage? {
+        guard asset.isHDR, let deep = asset.deep else { return nil }
+        guard asset.raster != nil else { return deep }
+        let key = ObjectIdentifier(asset.image)
+        if let found = canvasLock.withLock({ canvasImages.first { $0.key == key }?.image }) { return found }
+        guard let made = try? flattened(asset) else { return nil }
+        canvasLock.withLock {
+            // The source is held, so its identifier can't be reused by another image while the copy is kept.
+            canvasImages.insert((key, asset.image, made), at: 0)
+            if canvasImages.count > 6 { canvasImages.removeLast() }
+        }
+        return made
+    }
+    private static let canvasLock = NSLock()
+    nonisolated(unsafe) private static var canvasImages: [(key: ObjectIdentifier, source: CGImage, image: CGImage)] = []
+
     /// An HDR layer's pixels at the size of `preview` (an 8-bit copy a panel previews from), for the panel to preview
     /// from instead, as OK works from them; nil for any other layer.
     static func hdrPreview(of asset: ImportedImage, matching preview: CGImage) throws -> CGImage? {

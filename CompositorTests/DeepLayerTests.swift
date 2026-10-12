@@ -631,6 +631,75 @@ struct DeepLayerTests {
         #expect(matched < 1.5 && matched < before / 3, "\(kind): \(matched) steps off the result, \(before) from the clipped copy")
     }
 
+    /// Exported as EXR, an HDR document keeps its highlights; an Exposure adjustment layer over it works on them exactly.
+    @Test func hdrDocumentsExportAsEXR() async throws {
+        let (session, url, before) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        func exported() async throws -> Float {
+            let snapshot = try #require(session.projectSnapshot())
+            let raster = try await ImageExporter.shared.render(snapshot, sixteenBit: true, hdr: true)
+            let data = try await ImageExporter.shared.exrData(raster)
+            let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+            #expect(CGImageSourceGetType(source) as String? == UTType.openEXR.identifier)
+            return try peak(try #require(CGImageSourceCreateImageAtIndex(source, 0, nil)))
+        }
+        let whole = try await exported()
+        #expect(abs(whole - before) < 0.02, "highlights kept: \(before) exported as \(whole)")
+        session.addAdjustment(.exposure)
+        let id = try #require(session.activeLayerID)
+        var adjustment = try #require(session.activeLayer?.adjustment)
+        adjustment.exposure.exposure = -1
+        session.updateAdjustment(id, value: adjustment)
+        let dimmed = try await exported()
+        let expected = Float(1.055 * pow(2, 1 / 2.4) - 0.055)
+        #expect(abs(dimmed - expected) < 0.02, "one stop down: linear 4 to 2, \(dimmed) against \(expected)")
+    }
+
+    /// The canvas's adjustments over an HDR layer keep what's brighter than white, as a merge or export does: Exposure
+    /// works on the full range, and Levels dims a highlight in proportion. Transparency is left as it was.
+    @Test @MainActor func gpuAdjustmentsKeepHighlights() throws {
+        guard let renderer = GPUCanvasRenderer.shared else { return }
+        // Linear 2 (encoded about 1.35), opaque; and a half-transparent mid gray.
+        let bright = Float(1.055 * pow(2, 1 / 2.4) - 0.055)
+        func pixel(_ value: Float, alpha: Float) -> CIImage {
+            // A CIColor's components are straight, not premultiplied.
+            CIImage(color: CIColor(red: CGFloat(value), green: CGFloat(value), blue: CGFloat(value),
+                                   alpha: CGFloat(alpha), colorSpace: DeepLayer.hdrSpace)!).cropped(to: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        func read(_ image: CIImage) -> [Float] {
+            var out = [Float](repeating: 0, count: 4)
+            renderer.context.render(image, toBitmap: &out, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                                    format: .RGBAf, colorSpace: DeepLayer.hdrSpace)
+            return out
+        }
+        var exposure = LayerAdjustment(kind: .exposure)
+        exposure.exposure.exposure = -1
+        let dimmed = try #require(GPUAdjustment.apply(exposure, to: pixel(bright, alpha: 1), scale: 1, mapping: .identity, hdr: true))
+        #expect(abs(read(dimmed)[0] - 1) < 0.01, "linear 2 one stop down is white: \(read(dimmed))")
+        var levels = LayerAdjustment(kind: .levels)
+        levels.levels.ranges[0].outputWhite = 127.5
+        let halved = try #require(GPUAdjustment.apply(levels, to: pixel(bright, alpha: 1), scale: 1, mapping: .identity, hdr: true))
+        #expect(abs(read(halved)[0] - bright / 2) < 0.01, "a highlight halved: \(read(halved))")
+        let soft = try #require(GPUAdjustment.apply(levels, to: pixel(0.5, alpha: 0.5), scale: 1, mapping: .identity, hdr: true))
+        let values = read(soft)
+        #expect(abs(values[3] - 0.5) < 0.01 && abs(values[0] - 0.125) < 0.01, "coverage kept, color halved: \(values)")
+    }
+
+    /// The canvas draws an HDR layer from its own pixels, uploaded as half floats: its highlights reach the GPU.
+    @Test @MainActor func hdrLayersReachTheCanvasWithTheirHighlights() async throws {
+        guard let renderer = GPUCanvasRenderer.shared else { return }
+        let (session, url, before) = try await hdrSession()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let asset = try #require(session.activeLayer?.asset)
+        let shown = try #require(DeepLayer.canvasImage(asset))
+        let texture = try #require(renderer.image(shown))
+        var out = [Float](repeating: 0, count: 4)
+        // The ramp's brightest column, at the right.
+        renderer.context.render(texture, toBitmap: &out, rowBytes: 16,
+                                bounds: CGRect(x: shown.width - 1, y: 0, width: 1, height: 1), format: .RGBAf, colorSpace: DeepLayer.hdrSpace)
+        #expect(abs(out[0] - before) < 0.02, "the brightest value \(before) reached the GPU as \(out[0])")
+    }
+
     /// A version-11 project can't carry 16-bit pixels: older builds would misread them.
     @Test func olderVersionsCannotHoldSixteenBitImages() async throws {
         let (session, url) = try await importedSession()
