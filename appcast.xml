@@ -11,7 +11,11 @@
       <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.1</link>
       <changes><![CDATA[New Filter › Progressive Blur: drag two points on the canvas
 Adjustment layers over 16-bit layers now preview at full precision
-Smoother display of 16-bit and HDR layers]]></changes>
+Smoother display of 16-bit and HDR layers
+16-bit layers: 16-bit PNG, TIFF, HEIF and RAW keep full precision
+Convert layers between 8-bit and 16-bit from the right-click menu
+HDR: open EXR and .hdr images, and export EXR
+CMYK: proof colors and gamut warning in View › CMYK]]></changes>
       <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.1/Compositor.dmg" sparkle:edSignature="8C909yIzWrP19zkUcys06BwSb69NT0aUcOgHHSy7NEh/ZHkA7HY1ITsXnSc6apo6CQ94U27FdfgB30ah9K5bBg==" length="8161408" type="application/octet-stream"/>
     </item>
   </channel>
