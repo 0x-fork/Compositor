@@ -57,10 +57,9 @@ Version 13 lets a layer's image file be OpenEXR, named `<layer UUID>.exr`: an HD
 
 Version 14 adds optional `smoothing` to a layer’s `shape` style. True draws rectangle corners with Figma-style 60% smoothing (the iOS squircle match); false or missing keeps circular corners. Radius stays in document pixels, and smoothing reduces when the corners have insufficient room. Drawing previews and scaled redraws use the same geometry. Files declaring versions 1–13 cannot enable smoothing, and older app builds reject v14.
 
-
 ## GIF layers, version 28
 
-Version 28 introduces the complete GIF workflow through an optional `gif` object to an image layer. A GIF remains one layer, with the existing transform, opacity, effects, clipping link, and shared layer mask. Groups, adjustment layers, editable shapes, and editable text cannot carry `gif`. Versions 1–14 cannot contain GIF metadata, and older app builds reject version 28 through the existing version check.
+Version 28 adds an optional `gif` object to ordinary image layers. Groups, adjustments, editable text, and editable shapes cannot carry it. The existing transform, opacity, effects, clipping, and shared mask still apply to the whole layer.
 
 ```json
 "gif": {
@@ -70,70 +69,25 @@ Version 28 introduces the complete GIF workflow through an optional `gif` object
     {
       "index": 1,
       "maskFile": "6F1D3C2A-0B7E-4E8A-9C4D-2A1B3C4D5E6F.frame-1.mask.png",
-      "isEnabled": false,
-      "isLinked": true
+      "isEnabled": false
     }
   ]
 }
 ```
 
-- `sourceFile` is required and must be `<layer UUID>.gif` under `images/`. The original encoded GIF is captured at import and embedded at save; there is no external source path. Original frame composition, transparency, and delays are decoded from these bytes. Editable order and delays are stored separately below. The GIF's original loop metadata remains in the bytes, while editor playback loops indefinitely.
-- `selectedFrameIndex` is required, zero-based, and must identify a surviving editable frame. Save captures the displayed frame even during playback. Opening restores it, with playback paused and the edit target on frame pixels. Selecting another frame remains navigation rather than an undoable document edit.
-- `frameMasks` defaults to an empty array. Each record requires a unique in-range `index` and the canonical filename `<layer UUID>.frame-<index>.mask.png`. Its 8-bit grayscale PNG follows the ordinary mask rules. Optional `isEnabled` and `isLinked` default to true; optional `placement` defaults to nil and otherwise must be a valid layer transform. Disabled masks are embedded too.
-- Optional `geometry` records an Image Size rasterization applied to every frame. It contains output `width` and `height`, affine coefficients `a`, `b`, `c`, `d`, `tx`, `ty`, and optional `sampling` (default `High quality`). The affine map goes from normalized original-frame coordinates to normalized output coordinates. Dimensions must meet the raster limits; coefficients must be finite, within ±1,000,000, and have an absolute determinant greater than 10⁻¹⁵. Sampling uses the existing `High quality`, `Smooth`, or `Nearest` values. An omitted geometry uses the original GIF frame dimensions and pixels.
+- `sourceFile` is required: `<layer UUID>.gif` under `images/`, containing the immutable original GIF and its source timing. `selectedFrameIndex` is required and identifies a surviving frame. The ordinary `imageFile` remains a PNG of that selected frame's raw pixels, including edits, without masks baked in. Opening restores it with playback paused and editing on pixels.
+- `frameMasks` defaults to `[]`. Each record has a unique surviving `index` and `maskFile: "<layer UUID>.frame-<index>.mask.png"`. Masks use ordinary 8-bit grayscale coverage. `isEnabled` and `isLinked` default to true; optional `placement` defaults to nil and otherwise uses a valid layer transform. Disabled masks remain embedded. Enabled frame and shared masks multiply in rendering and export.
+- `geometry` defaults to nil (original source dimensions). It stores Image Size output `width`/`height`, affine coefficients `a`, `b`, `c`, `d`, `tx`, `ty`, and optional `sampling` (default `High quality`; also `Smooth` or `Nearest`). The map runs from normalized source to normalized output coordinates. Dimensions meet raster limits; coefficients are finite within ±1,000,000 with absolute determinant greater than 10⁻¹⁵. Selected and edited PNGs must match these output dimensions, or source dimensions without geometry.
+- `framePixels` defaults to `[]`. Records have unique surviving `index` values and `imageFile: "<layer UUID>.frame-<index>.png"`, containing full edited raw frames without masks. Other frames decode from the source through any geometry. Selected and edited PNGs count toward the document raster budget; masks use its separate mask budget. Thumbnails are regenerated rather than stored.
+- `deletedFrameIndices` defaults to `[]` and contains unique original source indices. `frameOrder` defaults to nil (surviving originals in source order); explicit entries are `{ "index": 4, "sourceIndex": 1 }` in playback order. Original identities equal source indices; inserted identities start at source frame count and remain below 8,192. Identities are unique, every undeleted original must appear, and 1–4,096 frames must remain. Deleting an inserted frame removes its order entry. Selection, pixels, masks, and delay overrides refer to surviving identities, not strip positions.
+- `timing` defaults to imported delays. `mode` is `Frame delay` or `Same for all`; `uniformDelay` is in seconds; `frameDelays` contains unique `{ "index": 4, "duration": 0.16 }` overrides. Delays must be finite and 0.02–655.35 seconds. Missing overrides use source delays; uniform mode retains but ignores overrides. Model defaults are per-frame mode and 0.1 seconds; newly imported layers suggest the most common source delay, or the mean if frequencies tie.
 
-The ordinary `imageFile` PNG is still required: it holds the selected raw frame at save time, without masks baked into its pixels. Its dimensions must match the GIF's original dimensions or the geometry's output dimensions. `maskFile`, `maskEnabled`, `maskPlacement`, and `maskLinked` remain the shared layer mask. Frame masks are saved separately, and rendering multiplies the enabled selected-frame mask with the enabled shared mask. Still-image exports and the Quick Look preview use that combined coverage.
+Each source accepts at most 4,096 frames and 512 MiB. Across layers, including duplicates, thumbnails share about 16 megapixels and source bytes are bounded by four times `DocumentLimits.documentPixelBudget`. Ordinary side, surface, raster, mask, and encoded-asset limits also apply. Loading validates source type, dimensions, identities, filenames, and assets before replacing the document; atomic saving preserves the previous package on failure. Full-size source frames decode on demand.
 
-Thumbnails are regenerated from the embedded GIF when loading, before replacing the live document. They are not separate package assets. At most 4,096 frames are accepted per GIF. Across embedded GIF sources, thumbnails are limited to about 16 megapixels and encoded bytes to four times `DocumentLimits.documentPixelBudget`; each GIF is also limited to 512 MiB. These allowances count each GIF layer, including duplicates, matching import and copy validation. Full-size frames are decoded as needed, rather than retaining every decoded frame. Saving and loading check frame indices, filenames, encoded GIF type, dimensions, thumbnails, and mask assets; missing or damaged data rejects the package. A failed save leaves the previous package intact.
-
-Undo history, mask edit targeting, and playback state remain session-only. This format preserves frame masks, edited pixels, geometry, order, deletions, and saved delays. Animated GIF export renders those records through the ordinary canvas composition; temporary export settings are not saved. The current workflow and its limits are tracked in [gif-support-plan.md](gif-support-plan.md).
-
-## Edited GIF frame pixels, version 28
-
-The `gif` object also supports an optional `framePixels` array. Missing or empty means every frame uses the original embedded GIF, through any saved `geometry`. Pixel overrides are optional; files declaring versions 1–14 cannot contain GIF metadata, and older app builds reject version 28.
-
-```json
-"framePixels": [
-  { "index": 1, "imageFile": "<layer UUID>.frame-1.png" }
-]
-```
-
-Each record requires a unique zero-based index identifying a surviving editable GIF frame and the canonical filename `<layer UUID>.frame-<index>.png`. The PNG contains the entire edited raw frame, including transparency, without either mask baked in. Its dimensions must match the original GIF frame dimensions or `geometry` output dimensions. Unlisted frames decode from the embedded GIF. Only edited frames retain full-size assets in memory. Their thumbnails are rebuilt from these PNGs, and playback uses them in place of decoded source pixels.
-
-The layer's ordinary `imageFile` remains a PNG of the selected raw frame, including its edits. It and every pixel override count toward the existing document image-pixel budget. Per-side, per-surface, and encoded-file limits also apply. Shared and frame masks retain their separate mask-pixel budget. Saving and loading reject mismatched indices, filenames, dimensions, missing images, and pixel budgets before replacing the package or live document.
-
-Pixel edits keep the GIF's shared logical frame grid, layer transform, and masks. Image Size resamples every override together with the layer; Crop, Canvas Size, and duplication preserve them. Edits use the existing immutable document snapshots and undo/redo. Frame selection and playback continue to be runtime state; opening restores the saved frame with playback paused.
-
-
-## Frame order and timing, version 28
-
-The following fields are optional and require version 28. Version 27 foundation packages default to original order, no deletions, and imported delays.
-
-- `deletedFrameIndices` defaults to `[]`. Entries are unique original source indices. At least one editable frame must survive. Deleting an inserted identity removes it from `frameOrder` instead.
-- `frameOrder` defaults to nil, which means surviving original frames in source order. An explicit array contains `{ "index": 4, "sourceIndex": 1 }` records in playback order. `index` is the stable edit identity; `sourceIndex` identifies the composed frame in the immutable source. Original identities equal their source indices. Inserted identities start at the source frame count, stay below 8,192, and may refer to any valid source frame. Identities must be unique, the order must include every undeleted original identity, and 1–4,096 frames must remain. The selected identity, masks, pixel overrides, and delay overrides must refer to surviving frames. An inserted frame inherits source pixels and delay unless it has overrides.
-- `timing` defaults to imported delays. Its `mode` is `Frame delay` or `Same for all`; `uniformDelay` is in seconds; `frameDelays` contains unique `{ "index": 4, "duration": 0.16 }` overrides. Every delay must be finite and between 0.02 and 655.35 seconds. Missing per-frame overrides use the source frame's delay. Uniform mode retains those overrides but ignores them while playing. The ordinary `GIFFrameTiming` defaults are per-frame mode and 0.1 seconds; newly imported layers store a suggested uniform delay based on source cadence.
-
-```json
-"deletedFrameIndices": [0],
-"frameOrder": [
-  { "index": 4, "sourceIndex": 1 },
-  { "index": 1, "sourceIndex": 1 },
-  { "index": 2, "sourceIndex": 2 },
-  { "index": 3, "sourceIndex": 3 }
-],
-"timing": {
-  "mode": "Frame delay",
-  "uniformDelay": 0.13,
-  "frameDelays": [{ "index": 4, "duration": 0.3 }]
-}
-```
-
-This fragment assumes four source frames; identity 0 is deleted and identity 4 is an inserted copy. Pixel edits, masks, frame management, and timing use existing document undo transactions. Temporary batch selection, onion skin, playback scope/speed, and export overrides remain session-only. Frame navigation remains outside undo history.
+Undo history, batch selection, mask edit targeting, onion skin, playback scope/speed, and export overrides remain session-only. See [GIF workflow](gif-support-plan.md) for editing, timing, and export behavior.
 
 ## Submission format compatibility
 
-The complete GIF submission writes provisional version 28. It accepts upstream versions 1–14 and local foundation versions 27–28. The earlier foundation build wrote version 27 without frame management or timing; these packages remain readable, and their absent fields default as described above. New saves use 28 so that the foundation reader rejects them rather than silently dropping edits.
+New saves use provisional version 28, reading upstream versions 1–14 and local foundation version 27. Version 27 omits frame order, deletions, and timing, which default as above; new fields require 28 so earlier readers reject them rather than lose edits. Coordinate any renumbering across writer, reader gates, documentation, and fixtures.
 
-The private animation fork used versions 12–26, overlapping upstream versions 12–14. Versions 15–26 and GIF metadata in versions 1–14 are rejected. Keep original fork packages and use the complete fork for those projects. Do not renumber manifests to bypass validation.
-
-Later feature PRs must allocate new schema versions when they add saved fields. The proposed number can be coordinated with upstream before merging, with writer, reader gates, documentation, and fixtures updated together. See [the submission plan](gif-pr-plan.md).
+Private-fork versions 15–26 and GIF metadata in versions 1–14 are rejected because the fork's animation schemas overlap upstream's still-image schemas. Keep those packages unchanged and use the complete private fork to open them; do not renumber manifests to bypass validation.

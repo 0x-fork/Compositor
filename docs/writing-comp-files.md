@@ -137,39 +137,8 @@ An adjustment layer has an `adjustment` object and no `imageFile`, and it affect
 - Folders, text layers, layer effects and everything else the format holds: [project-format.md](project-format.md).
 - Limits: canvases up to 30,000 pixels on a side; layers and masks count toward a memory budget that scales with the Mac.
 
-
 ## GIF layers
 
-Use version 28 for new projects containing GIF timelines, edited pixels, frame order, and saved delays. Upstream versions 1–14 remain readable for still projects and cannot contain `gif` metadata. Older app builds reject version 28.
+Use version 28 and add a `gif` object with `sourceFile: "<id>.gif"` and a zero-based `selectedFrameIndex` to an ordinary image layer. Embed the original GIF under `images/`, and keep `imageFile: "<id>.png"` as the selected frame's unmasked pixels. Save assets before replacing the manifest.
 
-Keep the usual `imageFile` entry and add a `gif` object to that image layer:
-
-```json
-"imageFile": "6F1D3C2A-0B7E-4E8A-9C4D-2A1B3C4D5E6F.png",
-"gif": {
-  "sourceFile": "6F1D3C2A-0B7E-4E8A-9C4D-2A1B3C4D5E6F.gif",
-  "selectedFrameIndex": 0,
-  "frameMasks": [
-    {
-      "index": 0,
-      "maskFile": "6F1D3C2A-0B7E-4E8A-9C4D-2A1B3C4D5E6F.frame-0.mask.png",
-      "isEnabled": true
-    }
-  ]
-}
-```
-
-Copy the complete original GIF into `images/<id>.gif`, and write the selected frame as `images/<id>.png`. The PNG must contain that frame's unmasked pixels and have the same dimensions as the GIF's composed frames. Frame indices start at zero. Every index must identify a surviving editable frame; list each mask index only once. Groups, adjustment layers, editable text, and editable shapes cannot also be GIF layers.
-
-Each frame mask uses an 8-bit grayscale PNG named exactly `<id>.frame-<index>.mask.png`. White reveals, black hides, and gray gives partial coverage. Omit a frame from `frameMasks` when it has no mask; omitting the entire array means no frame masks. `isEnabled` and `isLinked` default to true. Optional `placement` uses the same transform format as a shared layer mask. Keep `maskFile` on the layer for its shared mask; never bake either mask into the selected-frame PNG or merge the masks together.
-
-When editing an existing GIF layer, preserve any `geometry` object. Image Size uses it to apply a saved rasterization to every frame; the selected PNG then has its `width` and `height`. Refer to [project-format.md](project-format.md#gif-layers-version-28) for the affine coordinates and validation rules. No thumbnail files are needed: the app rebuilds them from the embedded GIF or edited frame PNGs and starts playback paused.
-
-For edited frame pixels, add an optional `framePixels` array inside `gif`, for example `[{ "index": 1, "imageFile": "<id>.frame-1.png" }]`. Save each edited full-size raw frame as that canonical PNG filename, with transparency and without masks baked in. Its dimensions must match the GIF's composed frame grid or saved `geometry`. List each index only once and only if it identifies a surviving editable frame. Omitted indices use the original source pixels; omitting `framePixels` means no pixel edits. Also update the selected-frame `<id>.png` to reflect its edited pixels. Edited PNGs and the selected-frame PNG share the document image-pixel budget. See [project-format.md](project-format.md#edited-gif-frame-pixels-version-28).
-
-Save all referenced assets before replacing the manifest, as for still layers. GIFs are limited to 4,096 frames and 512 MiB each, with combined source-byte and thumbnail budgets. Frame masks share the document's mask-pixel budget. A source file missing from the package, a malformed GIF, or an invalid frame index prevents the whole project from loading.
-
-
-Use `deletedFrameIndices`, `frameOrder`, and `timing` to preserve frame management and saved delays. Keep stable identities when moving frames; inserted identities refer to their original `sourceIndex`. Masks, pixel overrides, delay overrides, and `selectedFrameIndex` refer to those stable identities, not positions in the strip. Remove records belonging to deleted frames. Leave at least one frame, include every undeleted original identity in an explicit order, and preserve all existing timing values. See [frame order and timing](project-format.md#frame-order-and-timing-version-28) for a four-source-frame example, defaults, identity ranges, and validation.
-
-New saves use provisional format 28; upstream projects from versions 1–14 and local foundation version 27 remain readable. Version 27 cannot contain frame order, deletions, or timing overrides. Private animation-fork versions 15–26 and GIF metadata stored under versions 1–14 are rejected. Do not change an old fork manifest’s version to make it load. See [format compatibility](project-format.md#submission-format-compatibility).
+Preserve existing geometry, stable frame identities, pixel overrides, masks, and timing when editing a package. Masks remain separate grayscale PNGs; never bake them into frame pixels. See [GIF fields and validation](project-format.md#gif-layers-version-28) for filenames, defaults, limits, and compatibility, and [GIF workflow](gif-support-plan.md) for editor behavior.
