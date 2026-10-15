@@ -47,6 +47,24 @@ nonisolated struct LayerMask: Equatable, @unchecked Sendable {
         return ImportedImage(image: image, thumbnail: thumbnail, name: "Layer Mask")
     }
 
+    /// Rasterizes canvas-space selection coverage onto a frame's pixel grid; nil reveals the whole frame.
+    static func revealing(_ selection: SelectionClip?, over transform: LayerTransform, width: Int, height: Int) throws -> LayerMask {
+        let context = try BrushRaster.context(width: width, height: height, mask: true)
+        if let selection {
+            context.setFillColor(gray: 0, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            context.concatenate(BrushRaster.pixelToDocument(transform, width: width, height: height).inverted())
+            selection.apply(to: context)
+            context.setFillColor(gray: 1, alpha: 1)
+            context.fill(selection.rect)
+        } else {
+            context.setFillColor(gray: 1, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        guard let image = context.makeImage() else { throw ExportError.render }
+        return LayerMask(asset: try asset(from: image))
+    }
+
     /// Multiplies a frame-local mask by the layer mask after placing the latter on the current frame's pixel grid.
     static func combining(_ frameMask: LayerMask, with sharedMask: LayerMask?, layerTransform: LayerTransform,
                           sharedPlacement: LayerTransform?, width: Int, height: Int) -> LayerMask? {
@@ -261,7 +279,7 @@ extension ProjectSnapshot {
 extension EditorSession {
     /// Layers and folders alike take a mask.
     var canEditMask: Bool { canEditLayers && selectedLayerIDs.count == 1 && activeLayer != nil }
-    private var retainedMaskPixels: Int {
+    var retainedMaskPixels: Int {
         (document?.layers ?? []).reduce(0) { total, layer in
             total + (layer.mask.map { $0.asset.image.width * $0.asset.image.height } ?? 0)
                 + layer.gifFrameMasks.values.reduce(0) { $0 + $1.asset.image.width * $1.asset.image.height }
@@ -301,7 +319,7 @@ extension EditorSession {
             context.fill(CGRect(x: 0, y: 0, width: width, height: height))
             guard let canvasSize = document?.size else { return }
             let clip = try selection.clip(canvas: canvasSize)
-            context.concatenate(BrushRaster.pixelToDocument(layer.transform, width: width, height: height).inverted())
+            context.concatenate(BrushRaster.pixelToDocument(displayedTransform(for: layer), width: width, height: height).inverted())
             clip.apply(to: context)
             context.setFillColor(gray: revealing ? 1 : 0, alpha: 1)
             context.fill(clip.rect)
@@ -337,25 +355,9 @@ extension EditorSession {
             let width = asset.image.width, height = asset.image.height
             guard width > 0, height > 0, width * height <= DocumentLimits.maxSurfacePixels else { throw ProjectError.tooLarge }
             guard width * height <= DocumentLimits.documentPixelBudget - retainedMaskPixels else { throw ProjectError.tooLarge }
-            let context = try BrushRaster.context(width: width, height: height, mask: true)
-            let mask: LayerMask
-            if let selection {
-                context.setFillColor(gray: 0, alpha: 1)
-                context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-                guard let canvasSize = document?.size else { return }
-                let clip = try selection.clip(canvas: canvasSize)
-                context.concatenate(BrushRaster.pixelToDocument(layer.transform, width: width, height: height).inverted())
-                clip.apply(to: context)
-                context.setFillColor(gray: 1, alpha: 1)
-                context.fill(clip.rect)
-                guard let image = context.makeImage() else { throw ExportError.render }
-                mask = LayerMask(asset: try LayerMask.asset(from: image))
-            } else {
-                context.setFillColor(gray: 1, alpha: 1)
-                context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-                guard let image = context.makeImage() else { throw ExportError.render }
-                mask = LayerMask(asset: try LayerMask.asset(from: image))
-            }
+            guard let canvasSize = document?.size else { return }
+            let mask = try LayerMask.revealing(selection?.clip(canvas: canvasSize), over: displayedTransform(for: layer),
+                                               width: width, height: height)
             finishOpacityEdit()
             beginEdit("Add Frame Mask")
             document?.layers[layerIndex].gifFrameMasks[frameIndex] = mask
@@ -369,11 +371,33 @@ extension EditorSession {
 
     /// Enables or disables the selected frame's mask without changing the current paint target.
     func toggleGIFFrameMaskEnabled() {
-        guard gifTimelineCanToggleFrameMask, let layerID = gifTimelineLayerID,
+        guard let layerID = gifTimelineLayerID else { return }
+        toggleGIFFrameMaskEnabled(at: gifTimelineSelectedFrameIndex, for: layerID)
+    }
+
+    func addGIFFrameMask(at frameIndex: Int, for layerID: UUID) async {
+        guard gifTimelineCanEditFrameMask, activeLayerID == layerID,
+              let animation = activeLayer?.gifAnimation, animation.containsFrame(frameIndex),
+              activeLayer?.gifFrameMasks[frameIndex] == nil else { return }
+        pauseGIFForEditing(for: layerID)
+        await selectGIFTimelineFrame(frameIndex)
+        guard !Task.isCancelled, activeLayerID == layerID,
+              activeLayer?.gifAnimation?.source === animation.source,
+              selectedGIFFrameIndex(for: layerID) == frameIndex,
+              activeLayer?.gifFrameMasks[frameIndex] == nil else { return }
+        toggleGIFFrameMaskTarget()
+    }
+
+    func deleteGIFFrameMask(at frameIndex: Int, for layerID: UUID) {
+        deleteGIFFrameMasks(at: [frameIndex], for: layerID)
+    }
+
+    func toggleGIFFrameMaskEnabled(at frameIndex: Int, for layerID: UUID) {
+        guard gifTimelineCanEditFrameMask, activeLayerID == layerID,
+              activeLayer?.gifAnimation?.containsFrame(frameIndex) == true,
               let layerIndex = document?.layers.firstIndex(where: { $0.id == layerID }) else { return }
-        let frameIndex = gifTimelineSelectedFrameIndex
         guard let mask = document?.layers[layerIndex].gifFrameMasks[frameIndex] else { return }
-        stopGIFPlayback(for: layerID)
+        pauseGIFForEditing(for: layerID)
         finishOpacityEdit()
         beginEdit(mask.isEnabled ? "Disable Frame Mask" : "Enable Frame Mask")
         document?.layers[layerIndex].gifFrameMasks[frameIndex]?.isEnabled.toggle()

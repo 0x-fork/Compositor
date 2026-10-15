@@ -167,7 +167,8 @@ actor ImageImporter {
         guard size > 0, size <= GIFSource.byteLimit else { throw ImageImportError.tooLarge }
         let source = try GIFDecoder.source(Data(contentsOf: url), name: url.deletingPathExtension().lastPathComponent)
         guard source.width * source.height <= remainingPixels else { throw ImageImportError.tooLarge }
-        let animation = GIFAnimation(source: source)
+        var animation = GIFAnimation(source: source)
+        animation.timing.uniformDelay = GIFFrameTiming.defaultUniformDelay(for: source.frames)
         return (try GIFDecoder.frame(animation, index: 0, name: url.deletingPathExtension().lastPathComponent), animation)
     }
 

@@ -19,6 +19,7 @@ struct EditorCanvas: NSViewRepresentable {
 }
 
 final class CanvasView: NSView {
+    private let onionSkinEffects = EffectsPreviewCache()
     var inlineTextEditor: InlineTextEditor?
     /// The text being typed, rendered as the layer will hold it, remade only when its style changes.
     private var draftTextCache: (style: LayerTextStyle, image: CGImage)?
@@ -546,10 +547,16 @@ final class CanvasView: NSView {
         let textTransform: LayerTransform?
         /// The mask shown by itself, which may be one the composite doesn't draw (disabled, or a folder's).
         let maskAlone: ObjectIdentifier?
+        let onionSkin: Layer?
+        let onionSkinOpacity: Double
     }
 
     @discardableResult
     func synchronizeDisplay() -> Bool {
+        session.gifOnionSkin.update(for: session) { [weak self] in
+            self?.synchronizeDisplay()
+            self?.needsDisplay = true
+        }
         // The stroke is over: what its surface holds stands in until the layer's own effects have been rebuilt from
         // the pixels it left, so nothing blinks at the end of a stroke.
         if session.brushStroke == nil, let surface = strokeSurface {
@@ -569,23 +576,31 @@ final class CanvasView: NSView {
         // Worked out once: each asks for the whole layer hierarchy, which on a document of hundreds of layers is too much
         // to redo for every layer on every event.
         let visible = document?.effectiveVisibleIDs ?? []
+        let onionSkin = session.gifOnionSkin.layer(in: session).map {
+            DisplayState.Layer(id: $0.id, transform: $0.transform, imageID: $0.asset.map { ObjectIdentifier($0.image) },
+                maskID: $0.mask?.enabledImage.map { ObjectIdentifier($0) }, maskSourceID: $0.maskSourceID,
+                parentID: $0.parentID, visible: visible.contains($0.id), opacity: $0.effectiveOpacity(in: Dictionary(uniqueKeysWithValues: (document?.layers ?? []).map { ($0.id, $0) })),
+                blendMode: .normal, adjustment: nil, effects: $0.effects, maskPlacement: $0.mask?.placement)
+        }
         let state = DisplayState(brushRevision: session.brushRevision, pixelGrid: session.showsPixelGrid, documentID: document?.id, size: document?.size, renderBounds: renderBounds, viewport: session.viewport,
             layers: (document.map { $0.layers.contains(where: { $0.maskSourceID != nil }) ? $0.layers : $0.renderLayers } ?? []).filter { $0.asset != nil || $0.adjustment != nil }.map {
                 DisplayState.Layer(id: $0.id, transform: session.displayedTransform(for: $0),
-                                   imageID: session.displayedAsset(for: $0).map { ObjectIdentifier($0.image) }, maskID: session.displayedLayer(for: $0).mask?.enabledImage.map { ObjectIdentifier($0) }, maskSourceID: $0.maskSourceID, parentID: $0.parentID, visible: visible.contains($0.id), opacity: opacities[$0.id] ?? $0.opacity, blendMode: session.displayedBlendMode(for: $0), adjustment: $0.adjustment, effects: $0.effects,
+                                   imageID: session.displayedAsset(for: $0).map { ObjectIdentifier($0.image) }, maskID: session.displayedLayer(for: $0).mask?.enabledImage.map { ObjectIdentifier($0) }, maskSourceID: $0.maskSourceID, parentID: $0.parentID, visible: visible.contains($0.id), opacity: (opacities[$0.id] ?? $0.opacity), blendMode: session.displayedBlendMode(for: $0), adjustment: $0.adjustment, effects: $0.effects,
                                    maskPlacement: session.displayedMaskPlacement(for: $0))
             },
             folderMasks: (document?.layers ?? []).filter { $0.isGroup && $0.mask != nil }.map {
                 DisplayState.FolderMask(id: $0.id, maskID: $0.mask?.enabledImage.map { ObjectIdentifier($0) },
                                         transform: session.displayedTransform(for: $0))
             }, textStyle: session.textDraft?.style, textTransform: session.textDraft == nil ? nil : inlineTextEditor?.shownTransform,
-            maskAlone: session.maskAloneLayer?.mask.map { ObjectIdentifier($0.asset.image) })
+            maskAlone: session.maskAloneLayer?.mask.map { ObjectIdentifier($0.asset.image) },
+            onionSkin: onionSkin, onionSkinOpacity: session.gifOnionSkin.opacity)
         var changed = false
         if displayedState != state {
             if let previous = displayedState, previous.documentID == state.documentID,
                previous.size == state.size, previous.viewport == state.viewport,
                previous.renderBounds == state.renderBounds, previous.layers == state.layers,
                previous.folderMasks == state.folderMasks,
+               previous.onionSkin == state.onionSkin, previous.onionSkinOpacity == state.onionSkinOpacity,
                let stroke = session.brushStroke, let document,
                let dirty = stroke.dirtyDocumentRect {
                 let origin = session.viewport.viewPoint(from: dirty.origin, documentSize: document.size)
@@ -952,6 +967,38 @@ final class CanvasView: NSView {
         LayerRenderer.draw(mask.asset.image, transform: placed, center: center(placed.center), scale: scale, in: context)
     }
 
+    private struct OnionSkinAppearance {
+        let layer: ImageLayer
+        let image: CGImage
+        let mask: CGImage?
+        let transform: LayerTransform
+        let opacity: Double
+        let anchor: UUID
+    }
+
+    private func onionSkinAppearance(in document: CanvasDocument) -> OnionSkinAppearance? {
+        guard let layer = session.gifOnionSkin.layer(in: session), let image = layer.asset?.image,
+              document.effectiveVisibleIDs.contains(layer.id) else {
+            onionSkinEffects.prepare(layers: [])
+            return nil
+        }
+        onionSkinEffects.prepare(layers: [layer])
+        let mask = layer.mask?.clipImage(placement: layer.mask?.placement, over: layer.transform,
+                                        width: image.width, height: image.height, limit: 2048)
+        let opacity = session.gifOnionSkin.opacity
+        let faded = (opacity.isFinite ? min(1, max(0, opacity)) : 0.25)
+            * layer.effectiveOpacity(in: Dictionary(uniqueKeysWithValues: document.layers.map { ($0.id, $0) }))
+        let anchor = GIFOnionSkinPreview.anchor(for: layer.id, in: document)
+        if let effects = onionSkinEffects.preview(for: layer, mask: mask, transform: layer.transform,
+            maskPlacement: layer.mask?.placement, completion: { [weak self] in self?.needsDisplay = true }) {
+            let transform = effects.placement ?? LayerEffectsRenderer.placed(layer.transform, image: effects.image, inset: effects.inset)
+            return OnionSkinAppearance(layer: layer, image: effects.image, mask: nil, transform: transform,
+                                       opacity: faded, anchor: anchor)
+        }
+        return OnionSkinAppearance(layer: layer, image: image, mask: mask, transform: layer.transform,
+                                   opacity: faded, anchor: anchor)
+    }
+
     private func drawLayers(_ document: CanvasDocument, scale: CGFloat, center: @escaping (CGPoint) -> CGPoint, in context: CGContext, onSurface: Bool = false) {
         // Pixels being moved, or a gradient: the tiles drawn below follow the drag only once something reads them (see
         // PixelMove and GradientEdit).
@@ -992,6 +1039,7 @@ final class CanvasView: NSView {
             return
         }
         let byID = Dictionary(uniqueKeysWithValues: document.layers.map { ($0.id, $0) })
+        let onion = onionSkinAppearance(in: document)
         func drawOwn(_ id: UUID, _ context: CGContext) {
             guard let layer = byID[id] else { return }
             let displayedLayer = session.displayedLayer(for: layer)
@@ -1199,6 +1247,16 @@ final class CanvasView: NSView {
             }
         }
         live.prepareStacks(document.renderLayers.map(\.id), parent: { byID[$0]?.parentID }, blend: { byID[$0].map { session.displayedBlendMode(for: $0) } ?? .normal })
+        // The ghost has a separate dependency renderer, so it never becomes another layer's clipping coverage.
+        let ghostID = UUID()
+        let ghost = LiveMaskRenderer(bounds: context.boundingBoxOfClipPath,
+            source: { $0 == ghostID ? onion?.layer.maskSourceID : byID[$0]?.maskSourceID }, drawOwn: { id, ctx in
+                if id == ghostID, let onion {
+                    LayerRenderer.draw(onion.image, transform: onion.transform, center: center(onion.transform.center),
+                        scale: scale, opacity: onion.opacity, blendMode: .normal, mask: onion.mask, in: ctx)
+                } else { drawOwn(id, ctx) }
+            })
+        ghost.resolution = LayerRenderer.deviceScale(of: context)
         FolderMaskClip.draw(document.renderLayers.map(\.id), parent: { byID[$0]?.parentID }, clip: { id in
             guard let folder = byID[id], let mask = folder.mask, mask.isEnabled else { return nil }
             if let edit = liveMaskEdit(for: folder.id),
@@ -1209,7 +1267,10 @@ final class CanvasView: NSView {
             let clip = FolderMaskClip(image: displayImage(mask.asset.image, width: transform.size.width * scale, in: context), transform: transform)
             let origin = center(transform.center)
             return { clip.apply(scale: scale, center: origin, in: $0) }
-        }, in: context) { live.drawComposite($0, in: context) }
+        }, in: context) { id in
+            live.drawComposite(id, in: context)
+            if onion?.anchor == id { ghost.draw(ghostID, in: context) }
+        }
         drawNewText(context)
     }
 
@@ -1315,6 +1376,7 @@ final class CanvasView: NSView {
 
     /// The effects surface for a mask on its own placement being painted. Its stroke paints in the mask's grid; the
     /// surface stays in the layer's, and takes the mask from `preview`, the stroke's mask resampled into that grid.
+
     private func placedMaskSurface(layer: ImageLayer, stroke: BrushStroke, placement: LayerTransform, preview: CGImage) -> LayerEffectsSurface? {
         guard let effects = layer.effects?.visible, !effects.isEmpty, effects.isValid, let base = stroke.layer.asset?.image else { return nil }
         let grid = CGSize(width: base.width, height: base.height)
@@ -2792,6 +2854,7 @@ extension CanvasView {
         session.effectsPreviews.prepare(layers: document.layers)
         let byID = Dictionary(uniqueKeysWithValues: document.layers.map { ($0.id, $0) })
         let ids = document.renderLayers.map(\.id)
+        let onion = onionSkinAppearance(in: document)
         // With an HDR layer, what an adjustment works on may be brighter than white (`GPUAdjustment.apply`).
         let hasHDR = document.layers.contains { $0.asset?.isHDR == true }
         // Clipping stacks, as `LiveMaskRenderer.prepareStacks` finds them.
@@ -2891,6 +2954,8 @@ extension CanvasView {
         // through the mask as it's being left), through its own mask where its old pixels were — paint past them shows.
         func painted(_ layer: ImageLayer, stroke: BrushStroke, opacity: Double) -> CIImage? {
             let gridRect = CGRect(x: 0, y: 0, width: stroke.width, height: stroke.height)
+            // The stroke captures the selected GIF frame; the document layer keeps its first-frame asset.
+            let asset = stroke.layer.asset
             let placedApart = stroke.isMask && stroke.layer.mask?.placement != nil
             // A mask on its own placement paints in its own grid; the layer draws where it is.
             let transform = placedApart ? session.displayedTransform(for: layer) : stroke.paintTransform
@@ -2918,8 +2983,8 @@ extension CanvasView {
             // into the layer's grid.
             if placedApart {
                 let pixels: CIImage?
-                if let raster = layer.asset?.raster { pixels = placement.place(raster, transform: transform) }
-                else { pixels = layer.asset.flatMap { placement.place($0.image, transform: transform) } }
+                if let raster = asset?.raster { pixels = placement.place(raster, transform: transform) }
+                else { pixels = asset.flatMap { placement.place($0.image, transform: transform) } }
                 guard var image = pixels else { return nil }
                 if let preview = stroke.placedMaskPreview(placement: stroke.paintTransform) {
                     guard let mask = placement.place(transient: preview, transform: transform, mask: true) else { return nil }
@@ -2931,8 +2996,8 @@ extension CanvasView {
             if stroke.isMask {
                 guard let mask = maskGrid(stroke) else { return nil }
                 let pixels: CIImage?
-                if let raster = layer.asset?.raster { pixels = placement.renderer.image(raster) }
-                else { pixels = layer.asset.flatMap { placement.renderer.image($0.image) } }
+                if let raster = asset?.raster { pixels = placement.renderer.image(raster) }
+                else { pixels = asset.flatMap { placement.renderer.image($0.image) } }
                 guard let pixels else { return nil }
                 grid = GPUBlend.masked(inGrid(pixels, stroke: stroke), by: mask)
             } else if let edit = session.gradientEdit, edit.raster === stroke {
@@ -3177,6 +3242,20 @@ extension CanvasView {
             return image.applyingFilter("CIBlendWithAlphaMask", parameters: [kCIInputBackgroundImageKey: CIImage.empty(),
                                                                              kCIInputMaskImageKey: coverage])
         }
+        func withOnionSkin(after id: UUID, over below: CIImage) -> CIImage {
+            guard let onion, onion.anchor == id,
+                  var image = placement.place(onion.image, transform: onion.transform) else { return below }
+            if let mask = onion.mask {
+                guard let placed = placement.place(mask, transform: onion.transform, mask: true) else { return below }
+                image = GPUBlend.masked(image, by: placed)
+            }
+            if let sourceID = onion.layer.maskSourceID {
+                guard let source = byID[sourceID], let coverage = live(source) else { return below }
+                image = image.applyingFilter("CIBlendWithAlphaMask", parameters: [kCIInputBackgroundImageKey: CIImage.empty(),
+                                                                                kCIInputMaskImageKey: coverage])
+            }
+            return clippedByFolders(onion.layer.id, GPUBlend.faded(image, onion.opacity)).composited(over: below)
+        }
         // A shape being dragged out and new text go where their layers will: just above the active layer, or new text on
         // top when that isn't drawn (see `drawLayers`).
         var drewNewText = false
@@ -3222,6 +3301,7 @@ extension CanvasView {
                 let stack = group.applyingFilter("CIBlendWithAlphaMask", parameters: [kCIInputBackgroundImageKey: CIImage.empty(),
                                                                                        kCIInputMaskImageKey: base])
                 result = GPUBlend.blend(clippedByFolders(id, stack), over: result, mode: mode)
+                result = withOnionSkin(after: id, over: result)
                 continue
             }
             // A layer masked by another's coverage, outside a clipping stack.
@@ -3229,6 +3309,7 @@ extension CanvasView {
                 result = GPUBlend.blend(clippedByFolders(id, image), over: result, mode: mode)
             } else if unsupported { return nil }
             result = drafts(after: id, over: result)
+            result = withOnionSkin(after: id, over: result)
         }
         if !drewNewText, session.textDraft?.layerID == nil, let text = draftText,
            let placed = placement.place(text.image, transform: text.transform) {

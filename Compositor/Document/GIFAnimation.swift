@@ -63,6 +63,12 @@ nonisolated struct GIFFrameGeometry: Equatable, Codable, Sendable {
     }
 }
 
+/// A stable editable frame identity, distinct from its composed frame in the immutable GIF.
+nonisolated struct GIFFrameReference: Equatable, Codable, Sendable {
+    let index: Int
+    let sourceIndex: Int
+}
+
 nonisolated struct GIFAnimation: Equatable, Sendable {
     let source: GIFSource
     /// The frame restored on opening. Navigation and playback stay in the editor's runtime state.
@@ -70,9 +76,55 @@ nonisolated struct GIFAnimation: Equatable, Sendable {
     var geometry: GIFFrameGeometry? = nil
     /// Only edited frames retain full-size pixels; unedited frames still decode from the immutable source.
     var framePixels: [Int: ImportedImage] = [:]
+    /// Removed original frames. Inserted identities are removed directly from frameOrder.
+    var deletedFrameIndices: Set<Int> = []
+    /// Nil uses the surviving source sequence. Insertions and moves retain an explicit order.
+    var frameOrder: [GIFFrameReference]? = nil
+    var timing = GIFFrameTiming()
+
+    var frameReferences: [GIFFrameReference] {
+        frameOrder ?? source.frames.filter { !deletedFrameIndices.contains($0.index) }
+            .map { GIFFrameReference(index: $0.index, sourceIndex: $0.index) }
+    }
+
+    var sourceFrames: [GIFTimelineFrame] {
+        frameReferences.compactMap { reference in
+            guard source.frames.indices.contains(reference.sourceIndex) else { return nil }
+            let frame = source.frames[reference.sourceIndex]
+            return GIFTimelineFrame(index: reference.index, thumbnail: frame.thumbnail, duration: frame.duration)
+        }
+    }
+
+    var frames: [GIFTimelineFrame] {
+        sourceFrames.map { GIFTimelineFrame(index: $0.index, thumbnail: $0.thumbnail, duration: timing.delay(for: $0)) }
+    }
+
+    func sourceFrameIndex(for index: Int) -> Int? {
+        if let frameOrder { return frameOrder.first(where: { $0.index == index })?.sourceIndex }
+        return source.frames.indices.contains(index) && !deletedFrameIndices.contains(index) ? index : nil
+    }
+
+    func containsFrame(_ index: Int) -> Bool {
+        sourceFrameIndex(for: index) != nil
+    }
+
+    var hasValidFrameOrder: Bool {
+        guard let frameOrder else { return true }
+        guard !frameOrder.isEmpty, frameOrder.count <= GIFTimelineLimits.maxFrames else { return false }
+        var indices = Set<Int>()
+        for frame in frameOrder {
+            guard (0..<GIFTimelineLimits.frameIdentityLimit).contains(frame.index),
+                  indices.insert(frame.index).inserted, source.frames.indices.contains(frame.sourceIndex),
+                  frame.index >= source.frames.count || (frame.index == frame.sourceIndex
+                    && !deletedFrameIndices.contains(frame.index)) else { return false }
+        }
+        return Set(frameOrder.filter { $0.index < source.frames.count }.map(\.index))
+            == Set(source.frames.indices).subtracting(deletedFrameIndices)
+    }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.source === rhs.source && lhs.selectedFrameIndex == rhs.selectedFrameIndex && lhs.geometry == rhs.geometry
+            && lhs.deletedFrameIndices == rhs.deletedFrameIndices && lhs.frameOrder == rhs.frameOrder && lhs.timing == rhs.timing
             && lhs.framePixels.count == rhs.framePixels.count
             && lhs.framePixels.allSatisfy { rhs.framePixels[$0.key]?.image === $0.value.image }
     }

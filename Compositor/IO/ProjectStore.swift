@@ -17,11 +17,11 @@ extension UTType {
 
 nonisolated struct ProjectManifest: Codable, Sendable {
     /// The format version new saves write.
-    static let current = 27
+    static let current = 28
     /// Every version `load` accepts. The package-header check, the manifest check and the error
     /// message all read this, so they cannot drift apart when `current` is bumped.
     static let upstreamVersions = 1...14
-    static let supported = Set(upstreamVersions).union([current])
+    static let supported = Set(upstreamVersions).union([27, current])
 
     var format = "com.compositor.project"
     var version = ProjectManifest.current
@@ -69,17 +69,24 @@ nonisolated struct ProjectGIFRecord: Codable, Sendable {
     var geometry: GIFFrameGeometry? = nil
     var frameMasks: [ProjectGIFMaskRecord] = []
     var framePixels: [ProjectGIFPixelsRecord] = []
+    var deletedFrameIndices: [Int] = []
+    var frameOrder: [GIFFrameReference]? = nil
+    var timing: ProjectGIFTimingRecord? = nil
 
     init(sourceFile: String, selectedFrameIndex: Int, geometry: GIFFrameGeometry? = nil,
-         frameMasks: [ProjectGIFMaskRecord] = [], framePixels: [ProjectGIFPixelsRecord] = []) {
+         frameMasks: [ProjectGIFMaskRecord] = [], framePixels: [ProjectGIFPixelsRecord] = [],
+         deletedFrameIndices: [Int] = [], frameOrder: [GIFFrameReference]? = nil, timing: ProjectGIFTimingRecord? = nil) {
         self.sourceFile = sourceFile
         self.selectedFrameIndex = selectedFrameIndex
         self.geometry = geometry
         self.frameMasks = frameMasks
         self.framePixels = framePixels
+        self.deletedFrameIndices = deletedFrameIndices
+        self.frameOrder = frameOrder
+        self.timing = timing
     }
 
-    private enum CodingKeys: String, CodingKey { case sourceFile, selectedFrameIndex, geometry, frameMasks, framePixels }
+    private enum CodingKeys: String, CodingKey { case sourceFile, selectedFrameIndex, geometry, frameMasks, framePixels, deletedFrameIndices, frameOrder, timing }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -88,7 +95,39 @@ nonisolated struct ProjectGIFRecord: Codable, Sendable {
         geometry = try values.decodeIfPresent(GIFFrameGeometry.self, forKey: .geometry)
         frameMasks = try values.decodeIfPresent([ProjectGIFMaskRecord].self, forKey: .frameMasks) ?? []
         framePixels = try values.decodeIfPresent([ProjectGIFPixelsRecord].self, forKey: .framePixels) ?? []
+        deletedFrameIndices = try values.decodeIfPresent([Int].self, forKey: .deletedFrameIndices) ?? []
+        frameOrder = try values.decodeIfPresent([GIFFrameReference].self, forKey: .frameOrder)
+        timing = try values.decodeIfPresent(ProjectGIFTimingRecord.self, forKey: .timing)
     }
+}
+
+nonisolated struct ProjectGIFTimingRecord: Codable, Sendable {
+    var mode: GIFDelayMode
+    var uniformDelay: TimeInterval
+    var frameDelays: [ProjectGIFDelayRecord]
+
+    init(_ timing: GIFFrameTiming) {
+        mode = timing.mode
+        uniformDelay = timing.uniformDelay
+        frameDelays = timing.frameDelays.keys.sorted().map { ProjectGIFDelayRecord(index: $0, duration: timing.frameDelays[$0]!) }
+    }
+
+    var frameTiming: GIFFrameTiming {
+        var timing = GIFFrameTiming(mode: mode, uniformDelay: uniformDelay)
+        for record in frameDelays { timing.frameDelays[record.index] = record.duration }
+        return timing
+    }
+
+    var isValid: Bool {
+        frameDelays.count <= GIFTimelineLimits.maxFrames && frameTiming.isValid
+            && Set(frameDelays.map(\.index)).count == frameDelays.count
+            && frameDelays.allSatisfy { (0..<GIFTimelineLimits.frameIdentityLimit).contains($0.index) }
+    }
+}
+
+nonisolated struct ProjectGIFDelayRecord: Codable, Sendable {
+    let index: Int
+    let duration: TimeInterval
 }
 
 nonisolated struct ProjectGIFPixelsRecord: Codable, Sendable {
@@ -137,7 +176,7 @@ nonisolated enum ProjectError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalid: "This is not a valid Compositor project, or its metadata is damaged."
-        case .version(let version): "This project uses format version \(version). This app supports versions \(ProjectManifest.upstreamVersions.lowerBound)–\(ProjectManifest.upstreamVersions.upperBound) and \(ProjectManifest.current)."
+        case .version(let version): "This project uses format version \(version). This app supports versions \(ProjectManifest.upstreamVersions.lowerBound)–\(ProjectManifest.upstreamVersions.upperBound), 27, and \(ProjectManifest.current)."
         case .missingImage: "An image inside the project is missing or damaged. The current document has not been replaced."
         case .tooLarge: "This project exceeds the supported canvas, layer, file-size, or \(DocumentLimits.documentBudgetMegapixels)-megapixel document limit."
         case .encode: "An image could not be saved. The previous project has not been replaced."
@@ -180,6 +219,8 @@ actor ProjectStore {
                 guard CGImageDestinationFinalize(destination) else { throw ProjectError.encode }
                 return data as Data
             }
+            guard data.count <= 512 * 1024 * 1024 else { throw ProjectError.tooLarge }
+            if layer.gif != nil, !isMask, asset.deep != nil { throw ProjectError.invalid }
             images[filename] = FileWrapper(regularFileWithContents: data)
           }
             guard let gif = layer.gif else { continue }
@@ -298,6 +339,7 @@ actor ProjectStore {
                 if depth == 16 { return try DeepLayer.asset(image, name: layer.name) }
                 return ImportedImage(image: image, thumbnail: thumbnail, name: layer.name)
             }
+            if layer.gif != nil, !isMask, asset.deep != nil { throw ProjectError.invalid }
             if isMask { masks[layer.id] = asset } else { images[layer.id] = asset }
           }
             guard let gif = layer.gif else { continue }
@@ -310,6 +352,9 @@ actor ProjectStore {
             catch ImageImportError.tooManyFrames { throw ProjectError.tooLarge }
             catch { throw ProjectError.missingImage }
             var animation = GIFAnimation(source: source, selectedFrameIndex: gif.selectedFrameIndex, geometry: gif.geometry)
+            animation.deletedFrameIndices = Set(gif.deletedFrameIndices)
+            animation.frameOrder = gif.frameOrder
+            animation.timing = gif.timing?.frameTiming ?? GIFFrameTiming()
             guard let image = images[layer.id]?.image else { throw ProjectError.missingImage }
             for record in gif.framePixels {
                 let pixelsFile = url.appendingPathComponent("images").appendingPathComponent(record.imageFile)
@@ -346,22 +391,44 @@ actor ProjectStore {
                 guard manifest.version >= 14 else { throw ProjectError.invalid }
             }
             if let gif = layer.gif {
+                let identityLimit = manifest.version >= 28 ? GIFTimelineLimits.frameIdentityLimit : GIFTimelineLimits.maxFrames
                 guard manifest.version >= 27, layer.imageFile != nil, layer.isGroup != true,
                       layer.adjustment == nil, layer.text == nil, layer.shape == nil,
                       gif.sourceFile == "\(layer.id.uuidString).gif",
-                      (0..<GIFTimelineLimits.maxFrames).contains(gif.selectedFrameIndex),
+                      (0..<identityLimit).contains(gif.selectedFrameIndex),
                       gif.geometry.map(\.isValid) ?? true,
                       gif.frameMasks.count <= GIFTimelineLimits.maxFrames else { throw ProjectError.invalid }
                 var indices = Set<Int>()
+                guard gif.deletedFrameIndices.isEmpty || manifest.version >= 28,
+                      gif.deletedFrameIndices.count <= GIFTimelineLimits.maxFrames else { throw ProjectError.invalid }
+                for index in gif.deletedFrameIndices {
+                    guard (0..<GIFTimelineLimits.maxFrames).contains(index), indices.insert(index).inserted else {
+                        throw ProjectError.invalid
+                    }
+                }
+                indices.removeAll()
+                if let order = gif.frameOrder {
+                    guard manifest.version >= 28, !order.isEmpty, order.count <= GIFTimelineLimits.maxFrames else {
+                        throw ProjectError.invalid
+                    }
+                    for frame in order {
+                        guard (0..<identityLimit).contains(frame.index), indices.insert(frame.index).inserted,
+                              (0..<GIFTimelineLimits.maxFrames).contains(frame.sourceIndex) else { throw ProjectError.invalid }
+                    }
+                    indices.removeAll()
+                }
+                if let timing = gif.timing {
+                    guard manifest.version >= 28, timing.isValid else { throw ProjectError.invalid }
+                }
                 for mask in gif.frameMasks {
-                    guard (0..<GIFTimelineLimits.maxFrames).contains(mask.index), indices.insert(mask.index).inserted,
+                    guard (0..<identityLimit).contains(mask.index), indices.insert(mask.index).inserted,
                           mask.maskFile == "\(layer.id.uuidString).frame-\(mask.index).mask.png",
                           mask.placement.map(\.isValid) ?? true else { throw ProjectError.invalid }
                 }
                 guard gif.framePixels.count <= GIFTimelineLimits.maxFrames else { throw ProjectError.invalid }
                 indices.removeAll()
                 for pixels in gif.framePixels {
-                    guard (0..<GIFTimelineLimits.maxFrames).contains(pixels.index), indices.insert(pixels.index).inserted,
+                    guard (0..<identityLimit).contains(pixels.index), indices.insert(pixels.index).inserted,
                           pixels.imageFile == "\(layer.id.uuidString).frame-\(pixels.index).png" else { throw ProjectError.invalid }
                 }
             }
@@ -432,12 +499,18 @@ actor ProjectStore {
     private func validateAnimation(_ animation: GIFAnimation, record: ProjectGIFRecord, image: CGImage) throws {
         let source = animation.source
         guard animation.selectedFrameIndex == record.selectedFrameIndex, animation.geometry == record.geometry,
+              animation.deletedFrameIndices == Set(record.deletedFrameIndices),
+              animation.frameOrder == record.frameOrder, animation.hasValidFrameOrder,
+              animation.timing == (record.timing?.frameTiming ?? GIFFrameTiming()),
+              animation.timing.isValid(for: Set(animation.frameReferences.map(\.index))),
               !source.frames.isEmpty, source.frames.count <= GIFTimelineLimits.maxFrames,
-              source.frames.indices.contains(record.selectedFrameIndex),
-              record.frameMasks.allSatisfy({ source.frames.indices.contains($0.index) }),
+              record.deletedFrameIndices.allSatisfy({ source.frames.indices.contains($0) }),
+              animation.containsFrame(record.selectedFrameIndex),
+              record.frameMasks.allSatisfy({ animation.containsFrame($0.index) }),
               Set(animation.framePixels.keys) == Set(record.framePixels.map(\.index)),
               animation.framePixels.allSatisfy({ index, asset in
-                  source.frames.indices.contains(index) && asset.image.width == (record.geometry?.width ?? source.width)
+                  animation.containsFrame(index) && asset.deep == nil && asset.image.bitsPerComponent <= 8
+                      && asset.image.width == (record.geometry?.width ?? source.width)
                       && asset.image.height == (record.geometry?.height ?? source.height)
               }),
               (1...DocumentLimits.maxSide).contains(source.width), (1...DocumentLimits.maxSide).contains(source.height),

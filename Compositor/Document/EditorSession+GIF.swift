@@ -1,6 +1,123 @@
+import Foundation
 import CoreGraphics
 
 extension EditorSession {
+    func setGIFFrameTiming(_ timing: GIFFrameTiming, for layerID: UUID) {
+        guard gifTimelineCanEditTiming, activeLayerID == layerID,
+              let layerIndex = document?.layers.firstIndex(where: { $0.id == layerID }),
+              let animation = document?.layers[layerIndex].gifAnimation,
+              timing.isValid(for: Set(animation.frameReferences.map(\.index))), timing != animation.timing else { return }
+        // A timing edit can stop playback, but must let a pending manual frame selection finish.
+        if gifTimelineIsPlaying { pauseGIFForEditing(for: layerID) }
+        finishOpacityEdit()
+        beginEdit("Change GIF Delays")
+        document?.layers[layerIndex].gifAnimation?.timing = timing
+        endEdit()
+    }
+
+    /// The destination is the frame's final position after removing it from the sequence.
+    func moveGIFFrame(at frameIndex: Int, to destination: Int, for layerID: UUID) {
+        guard gifTimelineCanEditFrames, activeLayerID == layerID,
+              let layerIndex = document?.layers.firstIndex(where: { $0.id == layerID }),
+              var animation = document?.layers[layerIndex].gifAnimation else { return }
+        var order = animation.frameReferences
+        guard order.indices.contains(destination),
+              let position = order.firstIndex(where: { $0.index == frameIndex }), position != destination else { return }
+        pauseGIFForEditing(for: layerID)
+        order.insert(order.remove(at: position), at: destination)
+        animation.frameOrder = order
+        finishOpacityEdit()
+        beginEdit("Reorder GIF Frames")
+        document?.layers[layerIndex].gifAnimation = animation
+        endEdit()
+    }
+
+    func duplicateGIFFrame(at frameIndex: Int, for layerID: UUID) async {
+        guard gifTimelineCanEditFrames, activeLayerID == layerID, let layer = activeLayer,
+              let animation = layer.gifAnimation, animation.frames.count < GIFTimelineLimits.maxFrames,
+              let position = animation.frameReferences.firstIndex(where: { $0.index == frameIndex }) else { return }
+        let references = animation.frameReferences
+        let usedIndices = Set(references.map(\.index))
+        guard let newIndex = (animation.source.frames.count..<GIFTimelineLimits.frameIdentityLimit)
+            .first(where: { !usedIndices.contains($0) }) else { return }
+        pauseGIFForEditing(for: layerID)
+        await selectGIFTimelineFrame(frameIndex)
+        guard !Task.isCancelled, gifTimelineCanEditFrames, activeLayerID == layerID,
+              let layerIndex = document?.layers.firstIndex(where: { $0.id == layerID }),
+              var current = document?.layers[layerIndex], current.gifAnimation == animation,
+              selectedGIFFrameIndex(for: layerID) == frameIndex,
+              let asset = displayedAsset(for: current) else { return }
+        var edited = animation
+        var order = references
+        order.insert(GIFFrameReference(index: newIndex, sourceIndex: references[position].sourceIndex), at: position + 1)
+        edited.frameOrder = order
+        edited.framePixels[newIndex] = animation.framePixels[frameIndex]
+        edited.timing.frameDelays[newIndex] = animation.timing.frameDelays[frameIndex]
+        edited.selectedFrameIndex = newIndex
+        current.gifAnimation = edited
+        current.gifFrameMasks[newIndex] = current.gifFrameMasks[frameIndex]
+        current.asset = asset
+        var layers = document?.layers ?? []
+        layers[layerIndex] = current
+        guard canRetainGIFSources(in: layers),
+              (current.gifFrameMasks[newIndex].map { $0.asset.image.width * $0.asset.image.height } ?? 0)
+                <= DocumentLimits.documentPixelBudget - retainedMaskPixels else {
+            brushError = ProjectError.tooLarge.localizedDescription
+            return
+        }
+        finishOpacityEdit()
+        beginEdit("Duplicate GIF Frame")
+        document?.layers[layerIndex] = current
+        selectDuplicatedGIFFrame(newIndex, for: current)
+        endEdit()
+        brushRevision += 1
+        refreshCanvasPreview?()
+    }
+
+    /// Keeps source composition and surviving delays intact; the remaining loop becomes shorter.
+    func deleteGIFFrame(at frameIndex: Int, for layerID: UUID) async {
+        await deleteGIFFrames(at: [frameIndex], for: layerID)
+    }
+
+    /// Validate the whole batch and its replacement preview before committing one deletion.
+    func deleteGIFFrames(at frameIndices: Set<Int>, for layerID: UUID) async {
+        guard !Task.isCancelled, gifTimelineCanEditFrames, activeLayerID == layerID, let layer = activeLayer,
+              let animation = layer.gifAnimation, !frameIndices.isEmpty,
+              frameIndices.isSubset(of: Set(animation.frameReferences.map(\.index))),
+              frameIndices.count < animation.frames.count,
+              let selectedIndex = selectedGIFFrameIndex(for: layerID) else { return }
+        pauseGIFForEditing(for: layerID)
+        let order = animation.frameReferences
+        let remaining = order.filter { !frameIndices.contains($0.index) }
+        guard let position = order.firstIndex(where: { $0.index == selectedIndex }), let last = remaining.last else { return }
+        let nextIndex = frameIndices.contains(selectedIndex)
+            ? (order.dropFirst(position + 1).first { !frameIndices.contains($0.index) } ?? last).index : selectedIndex
+        // Decode the replacement before editing, so a failed read cannot leave a deleted frame on the canvas.
+        await selectGIFTimelineFrame(nextIndex)
+        guard !Task.isCancelled, gifTimelineCanEditFrames, activeLayerID == layerID,
+              let layerIndex = document?.layers.firstIndex(where: { $0.id == layerID }),
+              var current = document?.layers[layerIndex], current.gifAnimation == animation,
+              selectedGIFFrameIndex(for: layerID) == nextIndex,
+              let asset = displayedAsset(for: current) else { return }
+        var edited = animation
+        for index in frameIndices {
+            if animation.source.frames.indices.contains(index) { edited.deletedFrameIndices.insert(index) }
+            edited.framePixels.removeValue(forKey: index)
+            edited.timing.frameDelays.removeValue(forKey: index)
+            current.gifFrameMasks.removeValue(forKey: index)
+        }
+        edited.frameOrder?.removeAll { frameIndices.contains($0.index) }
+        edited.selectedFrameIndex = nextIndex
+        current.gifAnimation = edited
+        current.asset = asset
+        finishOpacityEdit()
+        beginEdit(frameIndices.count == 1 ? "Delete GIF Frame" : "Delete GIF Frames")
+        document?.layers[layerIndex] = current
+        endEdit()
+        brushRevision += 1
+        refreshCanvasPreview?()
+    }
+
     /// A tool's input is the raw selected frame, without either of its masks baked in.
     func pixelEditingLayer(for layer: ImageLayer) -> ImageLayer {
         guard layer.gifAnimation != nil else { return layer }

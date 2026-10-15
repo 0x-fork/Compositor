@@ -39,15 +39,16 @@ nonisolated enum GIFDecoder {
     }
 
     static func frame(_ animation: GIFAnimation, index: Int, name: String) throws -> ImportedImage {
-        guard animation.source.frames.indices.contains(index), animation.geometry?.isValid != false else {
+        guard let sourceIndex = animation.sourceFrameIndex(for: index),
+              animation.source.frames.indices.contains(sourceIndex), animation.geometry?.isValid != false else {
             throw ImageImportError.unreadable
         }
         if let edited = animation.framePixels[index] { return edited }
         return try autoreleasepool {
             guard let reader = CGImageSourceCreateWithData(animation.source.data as CFData,
                 [kCGImageSourceShouldCache: false] as CFDictionary) else { throw ImageImportError.unreadable }
-            _ = try frameSize(reader, index: index)
-            guard let decoded = CGImageSourceCreateImageAtIndex(reader, index,
+            _ = try frameSize(reader, index: sourceIndex)
+            guard let decoded = CGImageSourceCreateImageAtIndex(reader, sourceIndex,
                 [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { throw ImageImportError.unreadable }
             let width = animation.geometry?.width ?? decoded.width
             let height = animation.geometry?.height ?? decoded.height
