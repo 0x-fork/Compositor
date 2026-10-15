@@ -119,6 +119,28 @@ struct ContentView: View {
                         }
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("editor")) } action: { canvasFrame = $0 }
                     }
+                    if !session.canvasOnly,
+                       let gifLayerID = session.gifTimelineLayerID,
+                       session.activeLayerID == gifLayerID,
+                       session.document?.layers.contains(where: { $0.id == gifLayerID }) == true,
+                       !session.gifTimelineFrames.isEmpty {
+                        Divider()
+                        GIFTimeline(frames: session.gifTimelineFrames,
+                                    selectedFrameIndex: session.gifTimelineSelectedFrameIndex,
+                                    isPlaying: session.gifTimelineIsPlaying,
+                                    frameMaskIndices: session.gifTimelineFrameMaskIndices,
+                                    hasSelectedFrameMask: session.gifTimelineHasSelectedFrameMask,
+                                    isSelectedFrameMaskEnabled: session.gifTimelineSelectedFrameMaskIsEnabled,
+                                    isFrameMaskSelected: session.gifTimelineIsFrameMaskSelected,
+                                    canEditFrameMask: session.gifTimelineCanEditFrameMask,
+                                    canToggleFrameMask: session.gifTimelineCanToggleFrameMask,
+                                    onSelectFrame: { index in await session.selectGIFTimelineFrame(index) },
+                                    onTogglePlayback: { session.toggleGIFPlayback(for: gifLayerID) },
+                                    onStopPlayback: { session.stopGIFPlayback(for: gifLayerID) },
+                                    onToggleFrameMask: { session.toggleGIFFrameMaskTarget() },
+                                    onToggleFrameMaskEnabled: { session.toggleGIFFrameMaskEnabled() })
+                            .frame(height: 126)
+                    }
                 }
                 if !session.canvasOnly {
                     PanelResizeEdge(width: $layersPanelWidth, range: LayersPanel.widths)
