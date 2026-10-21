@@ -26,8 +26,9 @@ struct ShapeControls: View {
             if session.shapeKind == .line {
                 HStack(spacing: 6) {
                     Text("Width").scrubbable(sensitivity: 1, value: $session.shapeLineWidth, range: 1...5000)
-                    Slider(value: Binding(get: { min(100, session.shapeLineWidth) },
-                                          set: { session.shapeLineWidth = $0.rounded() }), in: 1...100)
+                    // The slider covers everyday widths; typing or scrubbing reaches up to 5000.
+                    Slider(value: Binding(get: { min(50, session.shapeLineWidth) },
+                                          set: { session.shapeLineWidth = $0.rounded() }), in: 1...50)
                         .frame(width: 100)
                     TextField("Width", value: Binding(get: { session.shapeLineWidth },
                                                       set: { session.shapeLineWidth = $0.isFinite ? min(5000, max(1, $0)) : 4 }),
