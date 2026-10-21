@@ -228,23 +228,19 @@ struct ShapeToolTests {
         }
     }
 
-    /// A 1-pixel line's layer holds it as one full-strength row with either cap, as it's drawn while dragging,
-    /// rather than two half-strength rows.
-    @Test(arguments: [ShapeLineCap.square, .round]) func thinLinesStayOnThePixelGrid(cap: ShapeLineCap) throws {
+    /// A 1-pixel line stays one full-strength row or column with either cap, in its layer and in the finished image,
+    /// as it's drawn while dragging, rather than two half-strength ones.
+    @Test(arguments: [ShapeLineCap.square, .round]) func thinLinesStayOnThePixelGrid(cap: ShapeLineCap) async throws {
         let session = makeSession()
         session.shapeKind = .line
         session.shapeLineWidth = 1
         session.shapeLineCap = cap
-        for end in [CGPoint(x: 50, y: 20), CGPoint(x: 10, y: 60)] {
-            drag(session, from: CGPoint(x: 10, y: 20), to: end)
-            let image = try #require(session.activeLayer?.asset?.image)
-            let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
-                bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-            let bytes = try #require(context.data).assumingMemoryBound(to: UInt8.self)
-            let strongest = (0..<image.width * image.height).map { Int(bytes[$0 * 4 + 3]) }.max()
-            #expect(strongest == 255)
-        }
+        drag(session, from: CGPoint(x: 10, y: 20), to: CGPoint(x: 50, y: 20))
+        let origin = try #require(session.activeLayer?.transform.origin)
+        #expect(origin.x == origin.x.rounded() && origin.y == origin.y.rounded(), "the layer sits on whole pixels")
+        drag(session, from: CGPoint(x: 70, y: 10), to: CGPoint(x: 70, y: 50))
+        let pixel = try await pixels(session)
+        #expect(pixel(30, 20).alpha == 255 && pixel(30, 19).alpha == 0 && pixel(30, 21).alpha == 0)
+        #expect(pixel(70, 30).alpha == 255 && pixel(69, 30).alpha == 0 && pixel(71, 30).alpha == 0)
     }
 }

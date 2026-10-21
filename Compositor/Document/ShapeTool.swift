@@ -56,9 +56,9 @@ nonisolated enum ShapeKind: String, CaseIterable, Codable, Sendable {
 /// How a Line shape's stroke is broken up.
 nonisolated enum ShapeLineStyle: String, CaseIterable, Codable, Sendable {
     case solid = "Solid"
+    case dotted = "Dotted"
     case dashed = "Dashed"
     case longDash = "Long Dash"
-    case dotted = "Dotted"
 
     /// Alternating dash and gap lengths, in multiples of the line's width, as they look with their caps on: a dot
     /// is exactly as long as the line is wide. Empty for a solid line.
@@ -182,7 +182,16 @@ extension EditorSession {
     /// The line being dragged, from where it began to where the pointer is, in document pixels.
     var shapeLineEnds: (start: CGPoint, end: CGPoint)? {
         guard let draft = shapeDraft, draft.kind == .line, let end = draft.end else { return nil }
-        return (draft.anchor, end)
+        let shift = Self.lineGridShift(width: CGFloat(shapeLineWidth))
+        return (CGPoint(x: draft.anchor.x + shift, y: draft.anchor.y + shift), CGPoint(x: end.x + shift, y: end.y + shift))
+    }
+
+    /// How far a line of `width` is nudged off the whole-pixel points it's dragged between, so its edges land on
+    /// pixel edges: half a pixel for an odd width, putting a 1-pixel line in the middle of one row rather than
+    /// across two at half strength; nothing for an even one.
+    nonisolated static func lineGridShift(width: CGFloat) -> CGFloat {
+        let half = width / 2
+        return half - half.rounded(.down)
     }
 
     /// Shift makes a square or circle; Option grows the shape from its center, as in Photoshop.
@@ -193,13 +202,14 @@ extension EditorSession {
             let dx = point.x - draft.anchor.x, dy = point.y - draft.anchor.y
             let angle = (atan2(dy, dx) / (.pi / 4)).rounded() * (.pi / 4)
             let length = hypot(dx, dy)
-            let snapped = CGPoint(x: draft.anchor.x + cos(angle) * length, y: draft.anchor.y + sin(angle) * length)
+            // Whole pixels, like the anchor; a 45° line rounds both ways alike, so it stays at 45°.
+            let snapped = CGPoint(x: (draft.anchor.x + cos(angle) * length).rounded(), y: (draft.anchor.y + sin(angle) * length).rounded())
             draft.end = snapped
             draft.rect = DragBox.rect(from: draft.anchor, to: snapped, square: false, fromCenter: fromCenter)
             shapeDraft = draft
             return
         }
-        if draft.kind == .line { draft.end = point }
+        if draft.kind == .line { draft.end = CGPoint(x: point.x.rounded(), y: point.y.rounded()) }
         draft.rect = DragBox.rect(from: draft.anchor, to: point, square: square, fromCenter: fromCenter)
         shapeDraft = draft
     }
@@ -226,7 +236,8 @@ extension EditorSession {
         // thickness (and its caps) around them.
         var ends: (start: CGPoint, end: CGPoint)?
         if draft.kind == .line {
-            let from = draft.anchor, to = draft.end ?? draft.anchor
+            let shift = Self.lineGridShift(width: thickness), end = draft.end ?? draft.anchor
+            let from = CGPoint(x: draft.anchor.x + shift, y: draft.anchor.y + shift), to = CGPoint(x: end.x + shift, y: end.y + shift)
             let reach = draft.lineCap.reach(from: from, to: to, width: thickness)
             rect = CGRect(x: min(from.x, to.x), y: min(from.y, to.y),
                           width: abs(to.x - from.x), height: abs(to.y - from.y)).insetBy(dx: -reach, dy: -reach)
