@@ -143,10 +143,10 @@ enum FontMenuFaces {
 }
 
 /// Keep the installed-font catalog out of SwiftUI's per-keystroke view updates.
-/// The closed control needs only the current name; populate its menu on demand.
+/// The closed control needs only the current name; the list is built when it opens (see `FontListPanel`).
 private struct TypeFontPicker: NSViewRepresentable {
     @Binding var fontName: String
-    /// The open menu trying faces on the text: the one under the pointer, putting the text back, or keeping it.
+    /// The open list trying faces on the text: the one highlighted, putting the text back, or keeping it.
     enum PreviewStep { case show(String), revert, keep }
     var preview: (PreviewStep) -> Void = { _ in }
     @Environment(\.isEnabled) private var isEnabled
@@ -162,9 +162,7 @@ private struct TypeFontPicker: NSViewRepresentable {
         button.cell?.usesSingleLineMode = true
         button.cell?.alignment = .left
         button.setAccessibilityLabel("Font")
-        button.target = context.coordinator
-        button.action = #selector(Coordinator.choose(_:))
-        button.menu?.delegate = context.coordinator
+        button.open = { [weak coordinator = context.coordinator] in coordinator?.open() }
         Coordinator.prepareStyledNames()
         context.coordinator.button = button
         return button
@@ -174,7 +172,7 @@ private struct TypeFontPicker: NSViewRepresentable {
         context.coordinator.fontName = $fontName
         context.coordinator.preview = preview
         button.isEnabled = isEnabled
-        guard !context.coordinator.tracking else { return }
+        guard !context.coordinator.isOpen else { return }
         if fontName.isEmpty { Self.showMultiple(in: button); return }
         Self.hideMultiple(in: button)
         guard button.titleOfSelectedItem != fontName else { return }
@@ -182,72 +180,83 @@ private struct TypeFontPicker: NSViewRepresentable {
         button.selectItem(withTitle: fontName)
     }
 
-    /// Selected letters in more than one face: the menu says so with an item of its own at the top, which isn't a font.
+    /// Selected letters in more than one face: the control says so, with an item of its own, which isn't a font.
     private static let multiple = "(Multiple)"
     private static func isMultiple(_ item: NSMenuItem?) -> Bool { item?.representedObject as? String == multiple }
-    /// The search box at the top of the open menu; not a font either.
-    private static let search = "(Search)"
-    fileprivate static func isSearch(_ item: NSMenuItem?) -> Bool { item?.representedObject as? String == search }
-    /// The (Multiple) item goes first, below the search box when the menu has one.
-    private static func multipleIndex(in button: NSPopUpButton) -> Int { isSearch(button.item(at: 0)) ? 1 : 0 }
     static func showMultiple(in button: NSPopUpButton) {
-        let index = multipleIndex(in: button)
-        if !isMultiple(button.item(at: index)) {
+        if !isMultiple(button.item(at: 0)) {
             let item = NSMenuItem(title: multiple, action: nil, keyEquivalent: "")
             item.representedObject = multiple
-            button.menu?.insertItem(item, at: index)
+            button.menu?.insertItem(item, at: 0)
         }
-        if button.indexOfSelectedItem != index { button.selectItem(at: index) }
+        if button.indexOfSelectedItem != 0 { button.selectItem(at: 0) }
     }
     static func hideMultiple(in button: NSPopUpButton) {
-        let index = multipleIndex(in: button)
-        if isMultiple(button.item(at: index)) { button.removeItem(at: index) }
+        if isMultiple(button.item(at: 0)) { button.removeItem(at: 0) }
     }
-    private static func isFont(_ item: NSMenuItem) -> Bool { !isMultiple(item) && !isSearch(item) }
 
     static func dismantleNSView(_ button: NSPopUpButton, coordinator: Coordinator) {
-        button.menu?.delegate = nil
-        button.target = nil
+        (button as? FixedWidthPopUpButton)?.open = nil
+        coordinator.close()
     }
 
     /// The font list holds names of every length; the control keeps whatever width it is given, so choosing a long
-    /// name can't stretch it — or leave it stretched once a short one is chosen again.
+    /// name can't stretch it — or leave it stretched once a short one is chosen again. A click opens the font list
+    /// below it rather than the pop-up's own menu, so the list's search box can stay put while the faces scroll.
     final class FixedWidthPopUpButton: NSPopUpButton {
+        var open: (() -> Void)?
         override var intrinsicContentSize: NSSize {
             NSSize(width: NSView.noIntrinsicMetric, height: super.intrinsicContentSize.height)
         }
+        override func mouseDown(with event: NSEvent) {
+            guard isEnabled, let open else { return super.mouseDown(with: event) }
+            open()
+        }
+        override func accessibilityPerformPress() -> Bool {
+            guard isEnabled, let open else { return super.accessibilityPerformPress() }
+            open()
+            return true
+        }
     }
 
-    final class Coordinator: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
+    final class Coordinator: NSObject {
         var fontName: Binding<String>
         var preview: (PreviewStep) -> Void
         weak var button: NSPopUpButton?
-        var tracking = false
-        private var loaded = false
-        /// Faces the text has used while this menu was around: their families stay listed (see `FontMenuFaces`).
+        private var panel: FontListPanel?
+        var isOpen: Bool { panel != nil }
+        /// When the list last closed: a click on the control while it's open closes it (the list loses the keyboard
+        /// first), and shouldn't open it again straight away.
+        private var closedAt = Date.distantPast
+        /// Faces the text has used while this control was around: their families stay listed (see `FontMenuFaces`).
         private var facesInUse: Set<String> = []
-        /// A face was chosen in the menu just closing, so its preview stays rather than being put back.
-        private var chose = false
 
         init(fontName: Binding<String>, preview: @escaping (PreviewStep) -> Void) { self.fontName = fontName; self.preview = preview }
 
-        /// Typing narrows the list to faces whose names hold every word; Return chooses the first one left.
-        private lazy var searchField: NSSearchField = {
-            let field = NSSearchField(frame: NSRect(x: 10, y: 4, width: 200, height: 22))
-            field.placeholderString = "Search Fonts"
-            field.autoresizingMask = .width
-            field.delegate = self
-            return field
-        }()
-        private lazy var searchItem: NSMenuItem = {
-            let box = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 30))
-            box.autoresizingMask = .width
-            box.addSubview(searchField)
-            let item = NSMenuItem()
-            item.view = box
-            item.representedObject = TypeFontPicker.search
-            return item
-        }()
+        func open() {
+            guard panel == nil, Date().timeIntervalSince(closedAt) > 0.25, let button, let window = button.window else { return }
+            let selected = fontName.wrappedValue
+            if !selected.isEmpty { facesInUse.insert(selected) }
+            let panel = FontListPanel(names: FontMenuFaces.names(inUse: Array(facesInUse)), selected: selected,
+                                      styledName: { Self.styledName($0) })
+            panel.onHighlight = { [weak self] name in self?.preview(.show(name)) }
+            panel.onFound = { [weak self] names in self?.facesInUse.formUnion(names) }
+            panel.onClose = { [weak self] chosen in self?.closed(choosing: chosen) }
+            self.panel = panel
+            panel.show(below: button.convert(button.bounds, to: nil), in: window)
+        }
+
+        func close() { panel?.dismiss(choosing: nil) }
+
+        private func closed(choosing name: String?) {
+            panel = nil
+            closedAt = Date()
+            guard let name else { preview(.revert); return }
+            // The text already shows the chosen face: keep it as it is, so it doesn't flash back.
+            preview(.keep)
+            facesInUse.insert(name)
+            if name != fontName.wrappedValue { fontName.wrappedValue = name }
+        }
 
         /// Each face's name set in that face, made once for the app. Building them all takes about half a second, so
         /// `prepareStyledNames` does it in the background when the Type bar first appears, ahead of the menu opening.
@@ -276,95 +285,6 @@ private struct TypeFontPicker: NSViewRepresentable {
                   name.unicodeScalars.filter({ $0.properties.isAlphabetic }).allSatisfy({ font.coveredCharacterSet.contains($0) })
             else { return NSAttributedString() }
             return NSAttributedString(string: name, attributes: [.font: font])
-        }
-
-        func menuNeedsUpdate(_ menu: NSMenu) {
-            guard let button else { return }
-            let selected = fontName.wrappedValue
-            // Built once, but rebuilt when the face in use brings in a family the list doesn't have yet.
-            if loaded, selected.isEmpty || FontMenuFaces.family(of: selected).allSatisfy({ button.item(withTitle: $0) != nil }) { return }
-            if !selected.isEmpty { facesInUse.insert(selected) }
-            let names = FontMenuFaces.names(inUse: Array(facesInUse))
-            button.removeAllItems()
-            button.addItems(withTitles: names)
-            for item in button.itemArray { item.attributedTitle = Self.styledName(item.title) }
-            menu.insertItem(searchItem, at: 0)
-            if selected.isEmpty { TypeFontPicker.showMultiple(in: button) } else { button.selectItem(withTitle: selected) }
-            loaded = true
-        }
-
-        func menuWillOpen(_ menu: NSMenu) {
-            tracking = true
-            // The menu's window exists once it's showing: give the search box the keys from the start.
-            RunLoop.main.perform(inModes: [.eventTracking, .default]) { [weak self] in
-                guard let self else { return }
-                searchField.window?.makeFirstResponder(searchField)
-            }
-        }
-        func menuDidClose(_ menu: NSMenu) {
-            tracking = false
-            searchField.stringValue = ""
-            filter("")
-            // A choice may be reported just after the menu closes: put the text back only if none came.
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                if !self.chose { self.preview(.revert) }
-                self.chose = false
-            }
-        }
-        /// Only a face previews. Nothing highlighted (the pointer off the list, or the menu closing on a click) leaves the
-        /// last face showing: reverting there flashed the old face just before the chosen one landed.
-        func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {
-            if let item, TypeFontPicker.isFont(item) { preview(.show(item.title)) }
-        }
-
-        func controlTextDidChange(_ notification: Notification) {
-            filter(searchField.stringValue)
-            keepMenuAtTheControl()
-        }
-
-        /// A window keeps its bottom edge when it shrinks, so a list cut down by a search fell to wherever the full
-        /// list ended, often the foot of the screen. Once the menu has resized, put its top level with the control.
-        private func keepMenuAtTheControl() {
-            RunLoop.main.perform(inModes: [.eventTracking, .default]) { [weak self] in
-                guard let self, let button, let control = button.window, let window = searchField.window,
-                      let screen = window.screen ?? control.screen else { return }
-                let top = min(control.convertToScreen(button.convert(button.bounds, to: nil)).maxY, screen.visibleFrame.maxY)
-                window.setFrameOrigin(NSPoint(x: window.frame.minX, y: max(screen.visibleFrame.minY, top - window.frame.height)))
-            }
-        }
-        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-            guard selector == #selector(NSResponder.insertNewline(_:)), let button,
-                  let first = button.itemArray.first(where: { TypeFontPicker.isFont($0) && !$0.isHidden }) else { return false }
-            button.select(first)
-            button.menu?.cancelTracking()
-            choose(button)
-            return true
-        }
-
-        /// Shows only the faces matching `query`, first listing any family it names that macOS leaves out.
-        private func filter(_ query: String) {
-            guard let button, let menu = button.menu else { return }
-            let query = query.trimmingCharacters(in: .whitespaces)
-            for name in FontMenuFaces.family(named: query) where button.item(withTitle: name) == nil {
-                facesInUse.insert(name)
-                let index = button.itemArray.firstIndex { TypeFontPicker.isFont($0) && $0.title > name } ?? button.numberOfItems
-                let item = NSMenuItem(title: name, action: nil, keyEquivalent: "")
-                item.attributedTitle = Self.styledName(name)
-                menu.insertItem(item, at: index)
-            }
-            for item in button.itemArray where TypeFontPicker.isFont(item) {
-                item.isHidden = !query.isEmpty && !FontMenuFaces.matches(item.title, query)
-            }
-        }
-
-        @objc func choose(_ button: NSPopUpButton) {
-            // The text already shows the face under the pointer: keep it as it is, so it doesn't flash back.
-            chose = true
-            preview(.keep)
-            guard !TypeFontPicker.isMultiple(button.selectedItem),
-                  let selected = button.titleOfSelectedItem, selected != fontName.wrappedValue else { return }
-            fontName.wrappedValue = selected
         }
     }
 }
