@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreImage
 import Metal
 
 /// RGB Split's dispersion on the GPU: each pixel gathers the image from many places along the split, each tinted by
@@ -29,6 +30,11 @@ nonisolated final class MetalDispersion: @unchecked Sendable {
         /// Samples across the spectrum, and along each streak.
         var spectral: UInt32
         var smear: UInt32
+        /// Where the first output and input texels' corners sit in the coordinates above, and which way rows run
+        /// in them: 1 down, as in the layer's pixels; −1 up, as in Core Image's.
+        var outputOrigin: SIMD2<Float> = .zero
+        var inputOrigin: SIMD2<Float> = .zero
+        var rowSign: Float = 1
     }
 
     private init() throws {
@@ -52,18 +58,32 @@ nonisolated final class MetalDispersion: @unchecked Sendable {
         else { throw ExportError.render }
         let region = MTLRegionMake2D(0, 0, width, height)
         source.replace(region: region, mipmapLevel: 0, withBytes: data, bytesPerRow: pixels.bytesPerRow)
+        encode(source, into: destination, parameters, with: encoder)
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else { throw command.error ?? ExportError.render }
+        destination.getBytes(data, bytesPerRow: pixels.bytesPerRow, from: region, mipmapLevel: 0)
+    }
+
+    /// Runs the dispersion from `source` into `destination` in `encoder`'s command buffer, which the caller commits.
+    func encode(_ source: MTLTexture, into destination: MTLTexture, _ parameters: Parameters, with encoder: MTLComputeCommandEncoder) {
         var parameters = parameters
         encoder.setComputePipelineState(pipeline)
         encoder.setTexture(source, index: 0)
         encoder.setTexture(destination, index: 1)
         encoder.setBytes(&parameters, length: MemoryLayout<Parameters>.stride, index: 0)
-        encoder.dispatchThreads(MTLSize(width: width, height: height, depth: 1),
+        encoder.dispatchThreads(MTLSize(width: destination.width, height: destination.height, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         encoder.endEncoding()
-        command.commit()
-        command.waitUntilCompleted()
-        guard command.status == .completed else { throw command.error ?? ExportError.render }
-        destination.getBytes(data, bytesPerRow: pixels.bytesPerRow, from: region, mipmapLevel: 0)
+    }
+
+    /// The dispersion of `image` as a Core Image image, for the canvas's GPU drawing: the parameters in `image`'s own
+    /// coordinates. The result reaches `margin` past `image`.
+    static func apply(to image: CIImage, _ parameters: Parameters, margin: CGFloat) -> CIImage? {
+        guard shared != nil, !image.extent.isInfinite, !image.extent.isEmpty else { return nil }
+        let data = withUnsafeBytes(of: parameters) { Data($0) }
+        return try? DispersionKernel.apply(withExtent: image.extent.insetBy(dx: -margin, dy: -margin), inputs: [image],
+                                           arguments: ["parameters": data, "margin": margin])
     }
 
     // Compiled at launch by the system's Metal compiler, as the brush's is.
@@ -81,15 +101,21 @@ struct Parameters {
     uint sides;
     uint spectral;
     uint smear;
+    float2 outputOrigin;
+    float2 inputOrigin;
+    float rowSign;
 };
 
-// The image at `q` (pixels), clear past a side that isn't the canvas's edge, its edge carried on past one that is.
-float4 tap(texture2d<float, access::sample> image, float2 q, float2 size, uint sides) {
+// The image at `q`, clear past a side that isn't the canvas's edge, its edge carried on past one that is.
+float4 tap(texture2d<float, access::sample> image, float2 q, float2 size, constant Parameters &p) {
     constexpr sampler edges(coord::normalized, address::clamp_to_edge, filter::linear);
-    if ((q.x < 0 && !(sides & 1)) || (q.x > size.x && !(sides & 2)) || (q.y < 0 && !(sides & 4)) || (q.y > size.y && !(sides & 8))) {
+    float2 texel = float2(q.x - p.inputOrigin.x, p.rowSign * (q.y - p.inputOrigin.y));
+    uint sides = p.sides;
+    if ((texel.x < 0 && !(sides & 1)) || (texel.x > size.x && !(sides & 2))
+        || (texel.y < 0 && !(sides & 4)) || (texel.y > size.y && !(sides & 8))) {
         return float4(0);
     }
-    return image.sample(edges, q / size);
+    return image.sample(edges, texel / size);
 }
 
 kernel void disperse(texture2d<float, access::sample> image [[texture(0)]],
@@ -97,8 +123,8 @@ kernel void disperse(texture2d<float, access::sample> image [[texture(0)]],
                      constant Parameters &p [[buffer(0)]],
                      uint2 pixel [[thread_position_in_grid]]) {
     float2 size = float2(image.get_width(), image.get_height());
-    if (pixel.x >= image.get_width() || pixel.y >= image.get_height()) return;
-    float2 at = float2(pixel) + 0.5;
+    if (pixel.x >= result.get_width() || pixel.y >= result.get_height()) return;
+    float2 at = p.outputOrigin + float2(float(pixel.x) + 0.5, p.rowSign * (float(pixel.y) + 0.5));
     float2 axis = p.radial ? (at - p.center) / max(p.reach, 1.0) : p.direction;
     float2 spread = axis * p.distance, streak = axis * p.blur;
     uint n = max(p.spectral, 1u), m = max(p.smear, 1u);
@@ -113,7 +139,7 @@ kernel void disperse(texture2d<float, access::sample> image [[texture(0)]],
         for (uint j = 0; j < m; j++) {
             // Each streak trails back along the split, so the image smears out in its direction.
             float u = m == 1 ? 0.0 : (float(j) + jitter) / float(m);
-            float4 c = tap(image, at - spread * t - streak * u, size, p.sides);
+            float4 c = tap(image, at - spread * t - streak * u, size, p);
             color += weight * c.rgb;
             alpha += weight * c.a;
             total += weight;
@@ -126,4 +152,33 @@ kernel void disperse(texture2d<float, access::sample> image [[texture(0)]],
     result.write(float4(min(color, float3(a)), a), pixel);
 }
 """
+}
+
+/// Runs `MetalDispersion` inside a Core Image graph, so the canvas's GPU drawing can show an RGB Split adjustment
+/// layer without leaving the GPU.
+final class DispersionKernel: CIImageProcessorKernel {
+    /// Whether Core Image hands over textures with their first row at the top of their region.
+    static let rowsTopDown = true
+
+    override class func roi(forInput input: Int32, arguments: [String: Any]?, outputRect: CGRect) -> CGRect {
+        let margin = arguments?["margin"] as? CGFloat ?? 0
+        return outputRect.insetBy(dx: -margin, dy: -margin)
+    }
+
+    override class func process(with inputs: [CIImageProcessorInput]?, arguments: [String: Any]?,
+                                output: CIImageProcessorOutput) throws {
+        guard let input = inputs?.first, let source = input.metalTexture, let destination = output.metalTexture,
+              let command = output.metalCommandBuffer, let gpu = MetalDispersion.shared,
+              let data = arguments?["parameters"] as? Data, data.count == MemoryLayout<MetalDispersion.Parameters>.size
+                  || data.count == MemoryLayout<MetalDispersion.Parameters>.stride,
+              let encoder = command.makeComputeCommandEncoder() else { throw ExportError.render }
+        var parameters = data.withUnsafeBytes { $0.loadUnaligned(as: MetalDispersion.Parameters.self) }
+        func origin(_ region: CGRect) -> SIMD2<Float> {
+            SIMD2(Float(region.minX), Float(rowsTopDown ? region.maxY : region.minY))
+        }
+        parameters.outputOrigin = origin(output.region)
+        parameters.inputOrigin = origin(input.region)
+        parameters.rowSign = rowsTopDown ? -1 : 1
+        gpu.encode(source, into: destination, parameters, with: encoder)
+    }
 }

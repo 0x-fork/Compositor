@@ -196,7 +196,8 @@ struct FilterSheet: View {
             HStack {
                 Button("Cancel") { session.cancelFilter() }.configuredNativeShortcut(.escape)
                 // The utility beside the effect: the layer's own channels, unshifted, as layers for Export As › Channel Pack.
-                if edit?.kind == .rgbSplit {
+                // Not on an RGB Split adjustment layer, which has no pixels of its own to split.
+                if edit?.kind == .rgbSplit, session.adjustmentOriginal == nil {
                     Button("Split to Layers") {
                         session.cancelFilter()
                         session.splitChannels()
