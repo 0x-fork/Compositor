@@ -893,12 +893,13 @@ final class EditorSession {
                                                                          remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
                     insert(asset, centeredAt: point)
                 } else if UTType(filenameExtension: url.pathExtension)?.conforms(to: .pdf) == true {
-                    // Every page, each its own layer with page 1 on top, at the canvas's resolution. A new canvas is
-                    // the first page's size, at 72 DPI.
-                    let pages = try await ImageImporter.shared.decodePDF(url, resolution: document?.resolution ?? 72,
+                    // Every page, each its own layer with page 1 on top, fitted to the canvas. A new canvas is the
+                    // first page at 300 DPI, so it keeps the page's print size.
+                    let pages = try await ImageImporter.shared.decodePDF(url, fitting: document?.size,
                                                                          remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
                     if document == nil, let first = pages.first {
-                        document = CanvasDocument(width: first.image.width, height: first.image.height)
+                        document = CanvasDocument(width: first.image.width, height: first.image.height,
+                                                  resolution: ImageImporter.pdfResolution)
                         viewport.fit(documentSize: document!.size)
                     }
                     for page in pages.reversed() { insert(page, centeredAt: point) }

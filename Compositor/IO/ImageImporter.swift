@@ -88,18 +88,22 @@ actor ImageImporter {
         return ImportedImage(image: image, thumbnail: try PixelAdjust.thumbnail(of: image), name: url.deletingPathExtension().lastPathComponent)
     }
 
-    /// A PDF's pages drawn into pixels, one image a page in page order, at `resolution`: the canvas's, or 72 for a new
-    /// one, a point a pixel. Text and vectors become pixels, and the paper stays see-through, as in Photoshop.
-    func decodePDF(_ url: URL, resolution: Double, remainingPixels: Int = DocumentLimits.documentPixelBudget) throws -> [ImportedImage] {
+    /// Pages make a new canvas at this resolution: sharp enough to print, and a Letter page 2550 × 3300.
+    static let pdfResolution: Double = 300
+
+    /// A PDF's pages drawn into pixels, one image a page in page order: each fitted to `fitting` (the canvas) when there
+    /// is one, as an SVG is, otherwise at `pdfResolution`. Text and vectors become pixels, and the paper stays
+    /// see-through, as in Photoshop.
+    func decodePDF(_ url: URL, fitting: CGSize?, remainingPixels: Int = DocumentLimits.documentPixelBudget) throws -> [ImportedImage] {
         guard let document = CGPDFDocument(url as CFURL), document.numberOfPages > 0 else { throw ImageImportError.unreadable }
         guard !document.isEncrypted || document.isUnlocked else { throw ImageImportError.locked }
-        let scale = resolution.isFinite && resolution > 0 ? resolution / 72 : 1
         let name = url.deletingPathExtension().lastPathComponent
         var remaining = remainingPixels
         return try (1...document.numberOfPages).map { number in
             guard let page = document.page(at: number) else { throw ImageImportError.unreadable }
             let box = page.getBoxRect(.cropBox)
             let size = abs(page.rotationAngle % 180) == 90 ? CGSize(width: box.height, height: box.width) : box.size
+            let scale = fitting.map { min($0.width / size.width, $0.height / size.height) } ?? Self.pdfResolution / 72
             let width = Int((size.width * scale).rounded()), height = Int((size.height * scale).rounded())
             guard width >= 1, height >= 1, width <= DocumentLimits.maxSide, height <= DocumentLimits.maxSide,
                   width * height <= remaining else { throw ImageImportError.tooLarge }

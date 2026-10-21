@@ -36,39 +36,41 @@ struct PDFImportTests {
         return try #require(context.data).load(fromByteOffset: 3, as: UInt8.self)
     }
 
-    @Test func everyPageIsALayerOnANewCanvasAt72DPI() async throws {
+    @Test func everyPageIsALayerOnANewCanvasAt300DPI() async throws {
         let url = try fixture()
         defer { try? FileManager.default.removeItem(at: url) }
         let session = EditorSession()
         await session.importImages([url])
         #expect(session.importError == nil)
         let document = try #require(session.document)
-        #expect(document.size == CGSize(width: 200, height: 100))
-        #expect(document.resolution == 72)
+        #expect(document.size == CGSize(width: 833, height: 417))
+        #expect(document.resolution == 300)
         #expect(document.layers.map(\.name) == ["Page 2", "Page 1"])
         let first = try #require(document.layers.last?.asset?.image)
         let second = try #require(document.layers.first?.asset?.image)
-        #expect(first.width == 200 && first.height == 100)
+        #expect(first.width == 833 && first.height == 417)
         // The quarter turn stands the second page upright.
-        #expect(second.width == 50 && second.height == 100)
+        #expect(second.width == 208 && second.height == 417)
         // The square is drawn top-left, and the rest of the page stays see-through.
-        #expect(try alpha(first, x: 10, y: 10) == 255)
-        #expect(try alpha(first, x: 150, y: 80) == 0)
+        #expect(try alpha(first, x: 40, y: 40) == 255)
+        #expect(try alpha(first, x: 600, y: 300) == 0)
         #expect(session.activeLayerID == document.layers.last?.id)
     }
 
-    @Test func aCanvasWithAHigherResolutionDrawsThePagesAtIt() async throws {
+    @Test func intoACanvasEachPageIsFittedToIt() async throws {
         let url = try fixture()
         defer { try? FileManager.default.removeItem(at: url) }
         let session = EditorSession()
-        session.createDocument(width: 1000, height: 1000, resolution: 144)
+        session.createDocument(width: 1000, height: 1000)
         await session.importImages([url])
         let document = try #require(session.document)
         #expect(document.size == CGSize(width: 1000, height: 1000))
         let first = try #require(document.layers.last?.asset?.image)
-        #expect(first.width == 400 && first.height == 200)
-        #expect(try alpha(first, x: 20, y: 20) == 255)
-        #expect(try alpha(first, x: 120, y: 20) == 0)
+        let second = try #require(document.layers.first?.asset?.image)
+        #expect(first.width == 1000 && first.height == 500)
+        #expect(second.width == 500 && second.height == 1000)
+        #expect(try alpha(first, x: 50, y: 50) == 255)
+        #expect(try alpha(first, x: 300, y: 50) == 0)
     }
 
     @Test func aDamagedPDFIsReported() async throws {
