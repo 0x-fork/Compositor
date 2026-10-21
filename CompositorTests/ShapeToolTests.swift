@@ -266,4 +266,23 @@ struct ShapeToolTests {
             #expect(gaps.allSatisfy { $0 == 0 }, "\(cap)")
         }
     }
+
+    /// Scaling a line stretches it as it looked while being scaled, rather than redrawing it at its old width.
+    @Test func aScaledLineStretchesInsteadOfKeepingItsWidth() async throws {
+        let session = makeSession()
+        session.shapeKind = .line
+        session.shapeLineWidth = 4
+        drag(session, from: CGPoint(x: 10, y: 20), to: CGPoint(x: 90, y: 20))
+        session.beginTransform()
+        var transform = try #require(session.transformEdit?.draft)
+        transform.size.height *= 3
+        session.previewTransform(transform)
+        session.commitTransform()
+        let layer = try #require(session.activeLayer)
+        #expect(layer.liveShape == nil, "plain pixels from then on")
+        #expect(layer.transform.size.height == transform.size.height)
+        let pixel = try await pixels(session)
+        let column = (0..<80).filter { pixel(50, $0).alpha > 127 }
+        #expect(column.count >= 10, "about three times the 4-pixel width")
+    }
 }

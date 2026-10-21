@@ -324,11 +324,14 @@ extension EditorSession {
     }
 
     /// A shape layer scaled to a new size draws its shape again at that size, so a rounded corner keeps its radius
-    /// instead of stretching. Part of the edit that changed the size.
+    /// instead of stretching. A line doesn't: it stretches as it looked while being scaled, thicker when made taller,
+    /// and is plain pixels from then on. Part of the edit that changed the size.
     func redrawShape(at index: Int) {
         guard let layer = document?.layers[index], let shape = layer.liveShape, let asset = layer.asset else { return }
         let width = max(1, Int(layer.transform.size.width.rounded())), height = max(1, Int(layer.transform.size.height.rounded()))
-        guard width != asset.image.width || height != asset.image.height, width * height <= Self.maxShapePixels,
+        guard width != asset.image.width || height != asset.image.height else { return }
+        if shape.style.kind == .line { document?.layers[index].shape = nil; return }
+        guard width * height <= Self.maxShapePixels,
               let image = try? Self.shapeImage(shape.style.kind, size: CGSize(width: width, height: height),
                                                color: shape.style.color, cornerRadius: shape.style.cornerRadius, smoothing: shape.style.smoothing == true,
                                                lineWidth: shape.style.lineWidth ?? 0,
