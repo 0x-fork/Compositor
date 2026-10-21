@@ -892,6 +892,17 @@ final class EditorSession {
                     let asset = try await ImageImporter.shared.decodeSVG(url, fitting: document?.size,
                                                                          remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
                     insert(asset, centeredAt: point)
+                } else if UTType(filenameExtension: url.pathExtension)?.conforms(to: .pdf) == true {
+                    // Every page, each its own layer with page 1 on top, fitted to the canvas. A new canvas is the
+                    // first page at 300 DPI, so it keeps the page's print size.
+                    let pages = try await ImageImporter.shared.decodePDF(url, fitting: document?.size,
+                                                                         remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
+                    if document == nil, let first = pages.first {
+                        document = CanvasDocument(width: first.image.width, height: first.image.height,
+                                                  resolution: ImageImporter.pdfResolution)
+                        viewport.fit(documentSize: document!.size)
+                    }
+                    for page in pages.reversed() { insert(page, centeredAt: point) }
                 } else if PSDReader.matches(url) {
                     beginPSDReading(title: "Open “\(url.lastPathComponent)”?", confirmTitle: "Import")
                     let imported: PSDImport
