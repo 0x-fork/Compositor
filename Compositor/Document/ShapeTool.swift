@@ -53,6 +53,63 @@ nonisolated enum ShapeKind: String, CaseIterable, Codable, Sendable {
     }
 }
 
+/// How a Line shape's stroke is broken up.
+nonisolated enum ShapeLineStyle: String, CaseIterable, Codable, Sendable {
+    case solid = "Solid"
+    case dashed = "Dashed"
+    case longDash = "Long Dash"
+    case dashDot = "Dash Dot"
+    case longDashDot = "Long Dash Dot"
+    case dotted = "Dotted"
+
+    /// Alternating dash and gap lengths, in multiples of the line's width, as they look with their caps on: a dot
+    /// is exactly as long as the line is wide. Empty for a solid line.
+    var pattern: [CGFloat] {
+        switch self {
+        case .solid: []
+        case .dashed: [3, 2]
+        case .longDash: [7, 2]
+        case .dashDot: [3, 1.5, 1, 1.5]
+        case .longDashDot: [6, 2, 1, 2]
+        case .dotted: [1, 1]
+        }
+    }
+
+    /// `pattern` for Core Graphics at `width`. Both kinds of cap add half the width to each end of every dash, so
+    /// the dashes are drawn that much shorter and the gaps that much longer; a dot is a dash of (almost) no length,
+    /// kept just long enough that a square cap still knows which way the line runs.
+    func dashes(width: CGFloat) -> [CGFloat] {
+        pattern.enumerated().map { index, length in
+            index % 2 == 0 ? max(0.001, (length - 1) * width) : (length + 1) * width
+        }
+    }
+}
+
+/// How the ends of a Line shape, and of each of its dashes, are finished.
+nonisolated enum ShapeLineCap: String, CaseIterable, Codable, Sendable {
+    case round = "Round"
+    case square = "Square"
+    var cgLineCap: CGLineCap { self == .round ? .round : .square }
+
+    /// How far past its two points a line of `width` reaches along each axis. A round cap reaches half the width
+    /// every way; a square one's corners reach further when the line runs at an angle, rounded up to whole pixels so
+    /// the layer's pixels hold all of them.
+    func reach(from start: CGPoint, to end: CGPoint, width: CGFloat) -> CGFloat {
+        let length = hypot(end.x - start.x, end.y - start.y)
+        guard self == .square, length > 0 else { return width / 2 }
+        return (width / 2 * (abs(end.x - start.x) + abs(end.y - start.y)) / length).rounded(.up)
+    }
+}
+
+extension CGContext {
+    /// Sets up the stroke a Line shape draws with.
+    nonisolated func setShapeLine(width: CGFloat, style: ShapeLineStyle, cap: ShapeLineCap) {
+        setLineWidth(width)
+        setLineCap(cap.cgLineCap)
+        setLineDash(phase: 0, lengths: style.dashes(width: width))
+    }
+}
+
 /// What a shape layer draws, kept so the shape can be drawn again at a new size.
 nonisolated struct LayerShapeStyle: Codable, Equatable, Sendable {
     var kind: ShapeKind
@@ -68,6 +125,10 @@ nonisolated struct LayerShapeStyle: Codable, Equatable, Sendable {
     var lineWidth: CGFloat? = nil
     var start: CGPoint? = nil
     var end: CGPoint? = nil
+    /// A line's dash pattern and caps (format version 15). Nil on lines drawn before they could be chosen, and on
+    /// solid, round-capped ones: they save as lines always have.
+    var lineStyle: ShapeLineStyle? = nil
+    var lineCap: ShapeLineCap? = nil
     var color: PaletteColor { PaletteColor(red: red, green: green, blue: blue) }
 }
 
@@ -102,6 +163,9 @@ struct ShapeDraft: Equatable {
     /// Document pixels, fixed when the drag starts; rectangles only.
     var cornerRadius: CGFloat = 0
     var smoothing = false
+    /// A line's dashes and caps, fixed when the drag starts.
+    var lineStyle = ShapeLineStyle.solid
+    var lineCap = ShapeLineCap.round
 }
 
 extension EditorSession {
@@ -113,7 +177,8 @@ extension EditorSession {
         let anchor = CGPoint(x: point.x.rounded(), y: point.y.rounded())
         shapeDraft = ShapeDraft(kind: shapeKind, anchor: anchor, rect: CGRect(origin: anchor, size: .zero),
                                 cornerRadius: shapeKind == .rectangle ? CGFloat(shapeCornerRadius) : 0,
-                                smoothing: shapeKind == .rectangle && shapeSmoothing)
+                                smoothing: shapeKind == .rectangle && shapeSmoothing,
+                                lineStyle: shapeLineStyle, lineCap: shapeLineCap)
     }
 
     /// The line being dragged, from where it began to where the pointer is, in document pixels.
@@ -160,12 +225,13 @@ extension EditorSession {
         var rect = draft.rect
         let thickness = CGFloat(shapeLineWidth)
         // A line keeps the two points it was dragged between; the layer is their box with room for the stroke's own
-        // thickness (and its round ends) around them.
+        // thickness (and its caps) around them.
         var ends: (start: CGPoint, end: CGPoint)?
         if draft.kind == .line {
             let from = draft.anchor, to = draft.end ?? draft.anchor
+            let reach = draft.lineCap.reach(from: from, to: to, width: thickness)
             rect = CGRect(x: min(from.x, to.x), y: min(from.y, to.y),
-                          width: abs(to.x - from.x), height: abs(to.y - from.y)).insetBy(dx: -thickness / 2, dy: -thickness / 2)
+                          width: abs(to.x - from.x), height: abs(to.y - from.y)).insetBy(dx: -reach, dy: -reach)
             ends = (from, to)
         }
         guard canEditLayers, document != nil, rect.width >= 1, rect.height >= 1 else { return }
@@ -181,10 +247,14 @@ extension EditorSession {
             }
             let start = ends.map { unit($0.start) }, finish = ends.map { unit($0.end) }
             let image = try Self.shapeImage(draft.kind, size: rect.size, color: foregroundColor, cornerRadius: draft.cornerRadius, smoothing: draft.smoothing,
-                                            lineWidth: thickness, start: start, end: finish)
+                                            lineWidth: thickness, start: start, end: finish,
+                                            lineStyle: draft.lineStyle, lineCap: draft.lineCap)
+            let line = draft.kind == .line
             let style = LayerShapeStyle(kind: draft.kind, red: foregroundColor.red, green: foregroundColor.green,
                                         blue: foregroundColor.blue, cornerRadius: draft.cornerRadius, smoothing: draft.smoothing ? true : nil,
-                                        lineWidth: draft.kind == .line ? thickness : nil, start: start, end: finish)
+                                        lineWidth: line ? thickness : nil, start: start, end: finish,
+                                        lineStyle: line && draft.lineStyle != .solid ? draft.lineStyle : nil,
+                                        lineCap: line && draft.lineCap != .round ? draft.lineCap : nil)
             addPixelLayer(image, at: rect.origin, name: nextShapeName(draft.kind), editName: draft.kind.rawValue,
                           dropsSelection: false, shape: LayerShape(style: style, image: image))
         } catch { brushError = error.localizedDescription }
@@ -207,7 +277,8 @@ extension EditorSession {
               let image = try? Self.shapeImage(shape.style.kind, size: CGSize(width: width, height: height),
                                                color: shape.style.color, cornerRadius: shape.style.cornerRadius, smoothing: shape.style.smoothing == true,
                                                lineWidth: shape.style.lineWidth ?? 0,
-                                               start: shape.style.start, end: shape.style.end),
+                                               start: shape.style.start, end: shape.style.end,
+                                               lineStyle: shape.style.lineStyle ?? .solid, lineCap: shape.style.lineCap ?? .round),
               let thumbnail = try? PixelInvert.thumbnail(of: image) else { return }
         // A mask that follows the layer's pixel grid stays exactly where it is while that grid changes size.
         if let mask = layer.mask, mask.placement == nil { document?.layers[index].mask?.placement = layer.maskTransform }
@@ -237,15 +308,15 @@ extension EditorSession {
 
     /// The shape filling its box, anti-aliased where it curves.
     nonisolated static func shapeImage(_ kind: ShapeKind, size: CGSize, color: PaletteColor, cornerRadius: CGFloat = 0, smoothing: Bool = false,
-                           lineWidth: CGFloat = 0, start: CGPoint? = nil, end: CGPoint? = nil) throws -> CGImage {
+                           lineWidth: CGFloat = 0, start: CGPoint? = nil, end: CGPoint? = nil,
+                           lineStyle: ShapeLineStyle = .solid, lineCap: ShapeLineCap = .round) throws -> CGImage {
         let context = try BrushRaster.context(width: Int(size.width), height: Int(size.height), mask: false)
         let bounds = CGRect(origin: .zero, size: size)
         if kind == .line {
             // Corner to corner, inset by half the thickness so the stroke stays inside the layer.
             let thickness = max(1, lineWidth)
             context.setStrokeColor(CGColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: 1))
-            context.setLineWidth(thickness)
-            context.setLineCap(.round)
+            context.setShapeLine(width: thickness, style: lineStyle, cap: lineCap)
             // The ends sit where they were dragged, as fractions of the box. Older lines (no ends stored) ran corner
             // to corner, inset by half their thickness.
             let inset = bounds.insetBy(dx: min(thickness, size.width) / 2, dy: min(thickness, size.height) / 2)

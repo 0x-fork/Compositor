@@ -241,6 +241,9 @@ final class EditorSession {
     var shapeSmoothing = false
     /// A Line shape's thickness in document pixels.
     var shapeLineWidth: Double = 4
+    /// A Line shape's dash pattern and the finish on its ends (and on each dash).
+    var shapeLineStyle = ShapeLineStyle.solid
+    var shapeLineCap = ShapeLineCap.round
     /// The shape being dragged out with the Shape tool, before it becomes a layer.
     var shapeDraft: ShapeDraft?
     var selectionModeChoice = SelectionMode.replace

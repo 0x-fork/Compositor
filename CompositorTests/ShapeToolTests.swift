@@ -171,4 +171,57 @@ struct ShapeToolTests {
         }
     }
 
+    /// Dashes are measured in line widths, caps included: a width-4 dashed line is 12 pixels on, 8 off.
+    @Test func dashedLinesBreakWhereThePatternSays() async throws {
+        let session = makeSession()
+        session.shapeKind = .line
+        session.shapeLineWidth = 4
+        drag(session, from: CGPoint(x: 10, y: 20), to: CGPoint(x: 90, y: 20))
+        #expect(session.activeLayer?.liveShape?.style.lineStyle == nil, "a solid line saves as lines always have")
+        session.shapeLineStyle = .dashed
+        drag(session, from: CGPoint(x: 10, y: 50), to: CGPoint(x: 90, y: 50))
+        #expect(session.activeLayer?.liveShape?.style.lineStyle == .dashed)
+        let pixel = try await pixels(session)
+        #expect(pixel(24, 20).alpha == 255, "solid all the way")
+        #expect(pixel(14, 50).alpha == 255 && pixel(24, 50).alpha == 0 && pixel(34, 50).alpha == 255)
+    }
+
+    /// A square cap fills the corners a round one leaves clear, and its layer grows to hold them at an angle.
+    @Test func squareCapsReachTheirCorners() async throws {
+        let session = makeSession()
+        session.shapeKind = .line
+        session.shapeLineWidth = 10
+        drag(session, from: CGPoint(x: 10, y: 20), to: CGPoint(x: 50, y: 20))
+        session.shapeLineCap = .square
+        drag(session, from: CGPoint(x: 10, y: 50), to: CGPoint(x: 50, y: 50))
+        #expect(session.activeLayer?.liveShape?.style.lineCap == .square)
+        let pixel = try await pixels(session)
+        #expect(pixel(5, 15).alpha == 0 && pixel(5, 45).alpha == 255, "only the square cap fills the corner")
+        #expect(pixel(54, 24).alpha == 0 && pixel(54, 54).alpha == 255)
+
+        drag(session, from: CGPoint(x: 60, y: 10), to: CGPoint(x: 80, y: 30))
+        let reach = (5 * CGFloat(2).squareRoot()).rounded(.up)
+        let size = try #require(session.activeLayer?.transform.size)
+        #expect(abs(size.width - (20 + reach * 2)) < 0.001 && abs(size.height - (20 + reach * 2)) < 0.001)
+    }
+
+    @Test func lineStylesSurviveSavingAndNeedVersionFifteen() async throws {
+        let session = makeSession()
+        session.shapeKind = .line
+        session.shapeLineStyle = .dotted
+        session.shapeLineCap = .square
+        drag(session, from: CGPoint(x: 10, y: 20), to: CGPoint(x: 90, y: 20))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("LineStyle-\(UUID()).comp")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let snapshot = try #require(session.projectSnapshot())
+        try await ProjectStore.shared.save(snapshot, to: url)
+        let loaded = try await ProjectStore.shared.load(from: url)
+        #expect(loaded.manifest.layers.last?.shape?.lineStyle == .dotted)
+        #expect(loaded.manifest.layers.last?.shape?.lineCap == .square)
+        var older = snapshot.manifest
+        older.version = 14
+        await #expect(throws: (any Error).self) {
+            try await ProjectStore.shared.save(ProjectSnapshot(manifest: older, images: snapshot.images), to: url)
+        }
+    }
 }
