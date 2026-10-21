@@ -434,7 +434,8 @@ final class BrushStroke {
             guard let tile = tiles[key] else { continue }
             if coverage[key] == nil {
                 coverage[key] = try BrushRaster.context(width: Int(tile.rect.width), height: Int(tile.rect.height), mask: true)
-                gpuTiles[key] = try gpu.tile(width: Int(tile.rect.width), height: Int(tile.rect.height))
+                gpuTiles[key] = try gpu.tile(width: Int(tile.rect.width), height: Int(tile.rect.height),
+                                             capped: settings.pressureOpacity && settings.hardness < 1)
             }
             work.append((gpuTiles[key]!, tile.rect, coverage[key]!))
         }

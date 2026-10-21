@@ -11,12 +11,15 @@ final class MetalBrushCoverage {
     struct Tile {
         let permanent: MTLBuffer
         let preview: MTLBuffer
+        /// The firmest press that has reached each pixel, for a soft tip whose opacity follows a pen; nil otherwise.
+        let cap: MTLBuffer?
     }
     private struct Uniforms {
         var mapping: SIMD4<Float>
         var geometry: SIMD4<Float>
         var canvas: SIMD4<Float>
         var counts: SIMD4<UInt32>
+        var options: SIMD4<UInt32>
     }
     private init() throws {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue(),
@@ -25,12 +28,20 @@ final class MetalBrushCoverage {
         self.queue = queue
         pipeline = try device.makeComputePipelineState(function: function)
     }
-    func tile(width: Int, height: Int) throws -> Tile {
-        // Two floats a pixel: the paint laid down, and the firmest press that reached it (see the shader).
-        guard let permanent = device.makeBuffer(length: width * height * 2 * MemoryLayout<Float>.stride, options: .storageModeShared),
+    /// `capped` keeps a second float a pixel, the firmest press to reach it (see the shader); only a soft tip with
+    /// pressure for opacity needs it.
+    func tile(width: Int, height: Int, capped: Bool) throws -> Tile {
+        let length = width * height * MemoryLayout<Float>.stride
+        guard let permanent = device.makeBuffer(length: length, options: .storageModeShared),
               let preview = device.makeBuffer(length: width * height, options: .storageModeShared) else { throw ExportError.render }
-        memset(permanent.contents(), 0, width * height * 2 * MemoryLayout<Float>.stride)
-        return Tile(permanent: permanent, preview: preview)
+        memset(permanent.contents(), 0, length)
+        var cap: MTLBuffer?
+        if capped {
+            guard let buffer = device.makeBuffer(length: length, options: .storageModeShared) else { throw ExportError.render }
+            memset(buffer.contents(), 0, length)
+            cap = buffer
+        }
+        return Tile(permanent: permanent, preview: preview, cap: cap)
     }
     func render(_ tiles: [(Tile, CGRect, CGContext)], settled: [BrushSegment], tail: [BrushSegment],
                 mapping: CGAffineTransform, settings: BrushSettings, canvas: CGSize) throws {
@@ -49,8 +60,11 @@ final class MetalBrushCoverage {
                 mapping: SIMD4(Float(mapping.a), Float(mapping.b), Float(mapping.c), Float(mapping.d)),
                 geometry: SIMD4(Float(origin.x), Float(origin.y), Float(settings.diameter / 2), Float(settings.hardness)),
                 canvas: SIMD4(Float(canvas.width), Float(canvas.height), Float(max(0.001, min(hypot(mapping.a, mapping.b), hypot(mapping.c, mapping.d)))), Float(max(0.25, settings.diameter * BrushStroke.spacingFraction(settings.hardness)))),
-                counts: SIMD4(UInt32(rect.width), UInt32(rect.height), UInt32(settled.count), UInt32(segments.count)))
+                counts: SIMD4(UInt32(rect.width), UInt32(rect.height), UInt32(settled.count), UInt32(segments.count)),
+                options: SIMD4(tile.cap == nil ? 0 : 1, 0, 0, 0))
             encoder.setBuffer(tile.permanent, offset: 0, index: 0)
+            // Without a cap the shader never reads it; any buffer fills the slot.
+            encoder.setBuffer(tile.cap ?? tile.permanent, offset: 0, index: 4)
             encoder.setBuffer(tile.preview, offset: 0, index: 1)
             encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 2)
             encoder.dispatchThreads(MTLSize(width: Int(rect.width), height: Int(rect.height), depth: 1),
@@ -77,6 +91,7 @@ struct BrushUniforms {
     float4 geometry; // document origin of tile, radius, hardness
     float4 canvas; // width, height, antialias width, deposition spacing
     uint4 counts; // tile width, height, committed segment count, total segment count
+    uint4 options; // whether `cap` holds the firmest press per pixel
 };
 
 // dynamics: the tip's radius at the start and end, and its strength at the start and end (a pen's pressure).
@@ -166,6 +181,7 @@ kernel void continuousBrush(device float *permanent [[buffer(0)]],
                             device uchar *preview [[buffer(1)]],
                             constant BrushUniforms &u [[buffer(2)]],
                             device const BrushSegment *segments [[buffer(3)]],
+                            device float *cap [[buffer(4)]],
                             uint2 pixel [[thread_position_in_grid]]) {
     if (pixel.x >= u.counts.x || pixel.y >= u.counts.y) return;
     uint index = pixel.y * u.counts.x + pixel.x;
@@ -178,24 +194,25 @@ kernel void continuousBrush(device float *permanent [[buffer(0)]],
         float settled = 0.0f, tail = 0.0f;
         for (uint i = 0; i < u.counts.z; ++i) settled = max(settled, hardCoverage(p, segments[i], u));
         for (uint i = u.counts.z; i < u.counts.w; ++i) tail = max(tail, hardCoverage(p, segments[i], u));
-        float value = max(permanent[2 * index], settled);
-        permanent[2 * index] = value;
+        float value = max(permanent[index], settled);
+        permanent[index] = value;
         preview[index] = uchar(round(255.0f * max(value, tail)));
     } else {
-        // Soft paint builds up as it always has, then the firmest press to reach the pixel caps it.
-        float value = permanent[2 * index], tail = 0.0f;
-        float cap = permanent[2 * index + 1], tailCap = 0.0f;
-        for (uint i = 0; i < u.counts.z; ++i) {
-            value += segmentDensity(p, segments[i], u);
-            cap = max(cap, segmentStrength(p, segments[i]));
+        // Soft paint builds up as it always has, then, with pressure for opacity, the firmest press to reach the pixel
+        // caps it.
+        float value = permanent[index], tail = 0.0f;
+        for (uint i = 0; i < u.counts.z; ++i) value += segmentDensity(p, segments[i], u);
+        for (uint i = u.counts.z; i < u.counts.w; ++i) tail += segmentDensity(p, segments[i], u);
+        permanent[index] = min(value, 20.0f);
+        float strength = 1.0f;
+        if (u.options.x != 0) {
+            float settledCap = cap[index], tailCap = 0.0f;
+            for (uint i = 0; i < u.counts.z; ++i) settledCap = max(settledCap, segmentStrength(p, segments[i]));
+            for (uint i = u.counts.z; i < u.counts.w; ++i) tailCap = max(tailCap, segmentStrength(p, segments[i]));
+            cap[index] = settledCap;
+            strength = max(settledCap, tailCap);
         }
-        for (uint i = u.counts.z; i < u.counts.w; ++i) {
-            tail += segmentDensity(p, segments[i], u);
-            tailCap = max(tailCap, segmentStrength(p, segments[i]));
-        }
-        permanent[2 * index] = min(value, 20.0f);
-        permanent[2 * index + 1] = cap;
-        preview[index] = uchar(round(255.0f * max(cap, tailCap) * (1.0f - exp(-min(value + tail, 20.0f)))));
+        preview[index] = uchar(round(255.0f * strength * (1.0f - exp(-min(value + tail, 20.0f)))));
     }
 }
 """
