@@ -17,7 +17,7 @@ extension UTType {
 
 nonisolated struct ProjectManifest: Codable, Sendable {
     /// The format version new saves write.
-    static let current = 14
+    static let current = 15
     /// Every version `load` accepts. The package-header check, the manifest check and the error
     /// message all read this, so they cannot drift apart when `current` is bumped.
     static let supported = 1...ProjectManifest.current
@@ -222,6 +222,10 @@ actor ProjectStore {
         for layer in manifest.layers {
             if layer.shape?.smoothing == true {
                 guard manifest.version >= 14 else { throw ProjectError.invalid }
+            }
+            // A line's dashes and caps arrived in version 15, and only lines have them.
+            if let shape = layer.shape, shape.lineStyle != nil || shape.lineCap != nil {
+                guard manifest.version >= 15, shape.kind == .line else { throw ProjectError.invalid }
             }
             if let text = layer.text {
                 // Per-letter colors arrived in version 10, per-letter faces in version 11.
