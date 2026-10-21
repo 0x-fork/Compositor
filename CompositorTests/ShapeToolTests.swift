@@ -203,7 +203,7 @@ struct ShapeToolTests {
         #expect(pixel(54, 24).alpha == 0 && pixel(54, 54).alpha == 255)
 
         drag(session, from: CGPoint(x: 60, y: 10), to: CGPoint(x: 80, y: 30))
-        let reach = (5 * CGFloat(2).squareRoot()).rounded(.up)
+        let reach = 5 + (5 * CGFloat(2).squareRoot() - 5).rounded(.up)
         let size = try #require(session.activeLayer?.transform.size)
         #expect(abs(size.width - (20 + reach * 2)) < 0.001 && abs(size.height - (20 + reach * 2)) < 0.001)
     }
@@ -225,6 +225,26 @@ struct ShapeToolTests {
         older.version = 14
         await #expect(throws: (any Error).self) {
             try await ProjectStore.shared.save(ProjectSnapshot(manifest: older, images: snapshot.images), to: url)
+        }
+    }
+
+    /// A 1-pixel line's layer holds it as one full-strength row with either cap, as it's drawn while dragging,
+    /// rather than two half-strength rows.
+    @Test(arguments: [ShapeLineCap.square, .round]) func thinLinesStayOnThePixelGrid(cap: ShapeLineCap) throws {
+        let session = makeSession()
+        session.shapeKind = .line
+        session.shapeLineWidth = 1
+        session.shapeLineCap = cap
+        for end in [CGPoint(x: 50, y: 20), CGPoint(x: 10, y: 60)] {
+            drag(session, from: CGPoint(x: 10, y: 20), to: end)
+            let image = try #require(session.activeLayer?.asset?.image)
+            let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            let bytes = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+            let strongest = (0..<image.width * image.height).map { Int(bytes[$0 * 4 + 3]) }.max()
+            #expect(strongest == 255)
         }
     }
 }

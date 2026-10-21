@@ -88,12 +88,14 @@ nonisolated enum ShapeLineCap: String, CaseIterable, Codable, Sendable {
     var cgLineCap: CGLineCap { self == .round ? .round : .square }
 
     /// How far past its two points a line of `width` reaches along each axis. A round cap reaches half the width
-    /// every way; a square one's corners reach further when the line runs at an angle, rounded up to whole pixels so
-    /// the layer's pixels hold all of them.
+    /// every way; a square one's corners reach further when the line runs at an angle. The extra is in whole pixels,
+    /// so the layer's pixels hold all of the corners and the line sits on the pixel grid as a round-capped one does:
+    /// a 1-pixel line stays one crisp row rather than two half-strength ones.
     func reach(from start: CGPoint, to end: CGPoint, width: CGFloat) -> CGFloat {
         let length = hypot(end.x - start.x, end.y - start.y)
         guard self == .square, length > 0 else { return width / 2 }
-        return (width / 2 * (abs(end.x - start.x) + abs(end.y - start.y)) / length).rounded(.up)
+        let corner = width / 2 * (abs(end.x - start.x) + abs(end.y - start.y)) / length
+        return width / 2 + (corner - width / 2 - 0.0001).rounded(.up)
     }
 }
 
