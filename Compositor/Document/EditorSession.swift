@@ -855,7 +855,7 @@ final class EditorSession {
         while !pendingImports.isEmpty {
           let request = pendingImports.removeFirst()
           let psdOnly = request.files.allSatisfy { PSDReader.matches($0.0) }
-          beginEdit(psdOnly ? "Import Photoshop File" : "Import Images")
+          beginEdit(psdOnly ? "Import Photoshop File" : "Import")
           // No document: the first successful image determines the canvas, regardless of drop point.
           let point = document == nil ? nil : request.point
           for (url, scoped) in request.files {
@@ -949,7 +949,7 @@ final class EditorSession {
     }
 
     func insert(_ asset: ImportedImage, centeredAt point: CGPoint? = nil) {
-        beginEdit("Import Image")
+        beginEdit("Import")
         defer { endEdit() }
         if document == nil {
             document = CanvasDocument(width: asset.image.width, height: asset.image.height)
