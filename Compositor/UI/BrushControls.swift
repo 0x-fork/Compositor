@@ -53,7 +53,7 @@ struct BrushControls: View {
                     // been used since the app opened.
                     if session.tool == .brush, PenInput.shared.seen {
                         Toggle(isOn: $session.brushSettings.pressureSize) { Image(systemName: "pencil.tip.crop.circle") }
-                            .toggleStyle(.button)
+                            .toggleStyle(PenPressureToggleStyle())
                             .help("Pen pressure sets the size: a light touch paints a thinner line")
                             .accessibilityLabel("Pressure for size")
                     }
@@ -79,7 +79,7 @@ struct BrushControls: View {
                     .unitSuffix("%")
                     if session.tool == .brush, PenInput.shared.seen {
                         Toggle(isOn: $session.brushSettings.pressureOpacity) { Image(systemName: "pencil.tip.crop.circle") }
-                            .toggleStyle(.button)
+                            .toggleStyle(PenPressureToggleStyle())
                             .help("Pen pressure sets the opacity: a light touch paints fainter, up to the brush’s Opacity")
                             .accessibilityLabel("Pressure for opacity")
                     }
@@ -145,6 +145,23 @@ struct BrushControls: View {
         }
         .padding(.horizontal, 18).toolHeaderBar().releasesFocusOnCommit(session)
         .disabled(session.showsBusy)
+    }
+}
+
+/// A pressure button: square, the height of the field beside it, which it sits close to.
+private struct PenPressureToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button { configuration.isOn.toggle() } label: {
+            let shape = RoundedRectangle(cornerRadius: 5, style: .continuous)
+            configuration.label
+                .foregroundStyle(configuration.isOn ? .white : .primary)
+                .frame(width: 22, height: 22)
+                .background(configuration.isOn ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary), in: shape)
+                .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, -6)
+        .accessibilityAddTraits(configuration.isOn ? .isSelected : [])
     }
 }
 
