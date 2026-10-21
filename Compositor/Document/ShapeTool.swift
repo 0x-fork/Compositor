@@ -71,9 +71,9 @@ nonisolated enum ShapeLineStyle: String, CaseIterable, Codable, Sendable {
         }
     }
 
-    /// `pattern` for Core Graphics at `width`. Both kinds of cap add half the width to each end of every dash, so
+    /// `pattern` for Core Graphics at `width`, with round caps (see `strokeShapeLine`). Caps add half the width to each end of every dash, so
     /// the dashes are drawn that much shorter and the gaps that much longer; a dot is a dash of (almost) no length,
-    /// kept just long enough that a square cap still knows which way the line runs.
+    /// kept just long enough to have a direction.
     func dashes(width: CGFloat) -> [CGFloat] {
         pattern.enumerated().map { index, length in
             index % 2 == 0 ? max(0.001, (length - 1) * width) : (length + 1) * width
@@ -100,11 +100,57 @@ nonisolated enum ShapeLineCap: String, CaseIterable, Codable, Sendable {
 }
 
 extension CGContext {
-    /// Sets up the stroke a Line shape draws with.
-    nonisolated func setShapeLine(width: CGFloat, style: ShapeLineStyle, cap: ShapeLineCap) {
+    /// Strokes a Line shape from `start` to `end`, in the current stroke and fill color. Its dashes are laid out here
+    /// rather than by Core Graphics, whose caps on a dot (a dash of almost no length) cover only a quarter of it, so
+    /// 1-pixel dots came out gray. A square cap is a flat-ended line reaching half the width past each end, cut into
+    /// full-length dashes; with round caps each dash is its own stroke, and each dot a circle.
+    nonisolated func strokeShapeLine(from start: CGPoint, to end: CGPoint, width: CGFloat, style: ShapeLineStyle, cap: ShapeLineCap) {
         setLineWidth(width)
-        setLineCap(cap.cgLineCap)
-        setLineDash(phase: 0, lengths: style.dashes(width: width))
+        setLineDash(phase: 0, lengths: [])
+        let length = hypot(end.x - start.x, end.y - start.y)
+        let direction = length > 0 ? CGPoint(x: (end.x - start.x) / length, y: (end.y - start.y) / length) : CGPoint(x: 1, y: 0)
+        // A point `distance` along the line, measured from where its first cap begins, half the width before `start`.
+        func along(_ distance: CGFloat) -> CGPoint {
+            CGPoint(x: start.x + direction.x * (distance - width / 2), y: start.y + direction.y * (distance - width / 2))
+        }
+        let total = length + width
+        if cap == .square {
+            setLineCap(.butt)
+            setLineDash(phase: 0, lengths: style.pattern.map { $0 * width })
+            move(to: along(0))
+            addLine(to: along(total))
+            strokePath()
+            return
+        }
+        setLineCap(.round)
+        let pattern = style.pattern.map { $0 * width }
+        guard !pattern.isEmpty else {
+            if length > 0 { move(to: start); addLine(to: end); strokePath() }
+            else { fillEllipse(in: CGRect(x: start.x - width / 2, y: start.y - width / 2, width: width, height: width)) }
+            return
+        }
+        let dashes = CGMutablePath(), dots = CGMutablePath()
+        var distance: CGFloat = 0, index = 0
+        while distance < total {
+            let next = min(total, distance + pattern[index % pattern.count])
+            if index % 2 == 0 {
+                // The dash's own line runs between its two caps' centers.
+                let a = distance + width / 2, b = next - width / 2
+                if b - a > 0.001 {
+                    dashes.move(to: along(a))
+                    dashes.addLine(to: along(b))
+                } else {
+                    let middle = along((distance + next) / 2)
+                    dots.addEllipse(in: CGRect(x: middle.x - width / 2, y: middle.y - width / 2, width: width, height: width))
+                }
+            }
+            distance = next
+            index += 1
+        }
+        addPath(dashes)
+        strokePath()
+        addPath(dots)
+        fillPath()
     }
 }
 
@@ -325,15 +371,12 @@ extension EditorSession {
             // Corner to corner, inset by half the thickness so the stroke stays inside the layer.
             let thickness = max(1, lineWidth)
             context.setStrokeColor(CGColor(srgbRed: color.red, green: color.green, blue: color.blue, alpha: 1))
-            context.setShapeLine(width: thickness, style: lineStyle, cap: lineCap)
             // The ends sit where they were dragged, as fractions of the box. Older lines (no ends stored) ran corner
             // to corner, inset by half their thickness.
             let inset = bounds.insetBy(dx: min(thickness, size.width) / 2, dy: min(thickness, size.height) / 2)
             let from = start.map { CGPoint(x: $0.x * size.width, y: $0.y * size.height) } ?? CGPoint(x: inset.minX, y: inset.minY)
             let to = end.map { CGPoint(x: $0.x * size.width, y: $0.y * size.height) } ?? CGPoint(x: inset.maxX, y: inset.maxY)
-            context.move(to: from)
-            context.addLine(to: to)
-            context.strokePath()
+            context.strokeShapeLine(from: from, to: to, width: thickness, style: lineStyle, cap: lineCap)
             guard let image = context.makeImage() else { throw ExportError.render }
             return image
         }

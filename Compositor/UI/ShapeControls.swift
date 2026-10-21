@@ -95,10 +95,7 @@ struct ShapeControls: View {
     /// A stretch of line in `style`, as it looks drawn.
     static func style(_ style: ShapeLineStyle) -> NSImage {
         image("style." + style.rawValue, size: NSSize(width: 84, height: 10)) { context in
-            context.setShapeLine(width: 2, style: style, cap: .round)
-            context.move(to: CGPoint(x: 2, y: 5))
-            context.addLine(to: CGPoint(x: 82, y: 5))
-            context.strokePath()
+            context.strokeShapeLine(from: CGPoint(x: 2, y: 5), to: CGPoint(x: 82, y: 5), width: 2, style: style, cap: .round)
         }
     }
 

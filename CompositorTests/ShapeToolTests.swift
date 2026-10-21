@@ -243,4 +243,27 @@ struct ShapeToolTests {
         #expect(pixel(30, 20).alpha == 255 && pixel(30, 19).alpha == 0 && pixel(30, 21).alpha == 0)
         #expect(pixel(70, 30).alpha == 255 && pixel(69, 30).alpha == 0 && pixel(71, 30).alpha == 0)
     }
+
+    /// A 1-pixel dotted line's dots are whole pixels at full strength with square caps, and circles as strong as a
+    /// pixel-wide circle gets with round ones, rather than quarter-strength smudges.
+    @Test func onePixelDotsKeepTheirColor() throws {
+        for cap in ShapeLineCap.allCases {
+            let session = makeSession()
+            session.shapeKind = .line
+            session.shapeLineWidth = 1
+            session.shapeLineStyle = .dotted
+            session.shapeLineCap = cap
+            drag(session, from: CGPoint(x: 10, y: 20), to: CGPoint(x: 60, y: 20))
+            let image = try #require(session.activeLayer?.asset?.image)
+            let context = try #require(CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            let bytes = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+            let row = (0..<image.width).map { Int(bytes[$0 * 4 + 3]) }
+            let dots = stride(from: 0, to: row.count, by: 2).map { row[$0] }, gaps = stride(from: 1, to: row.count, by: 2).map { row[$0] }
+            #expect(dots.allSatisfy { cap == .square ? $0 == 255 : $0 > 150 }, "\(cap)")
+            #expect(gaps.allSatisfy { $0 == 0 }, "\(cap)")
+        }
+    }
 }
