@@ -191,7 +191,10 @@ struct ShapeToolTests {
         let session = makeSession()
         session.shapeKind = .line
         session.shapeLineWidth = 10
+        #expect(session.shapeLineCap == .square, "new lines start square-capped")
+        session.shapeLineCap = .round
         drag(session, from: CGPoint(x: 10, y: 20), to: CGPoint(x: 50, y: 20))
+        #expect(session.activeLayer?.liveShape?.style.lineCap == nil, "a round cap saves as lines always have")
         session.shapeLineCap = .square
         drag(session, from: CGPoint(x: 10, y: 50), to: CGPoint(x: 50, y: 50))
         #expect(session.activeLayer?.liveShape?.style.lineCap == .square)

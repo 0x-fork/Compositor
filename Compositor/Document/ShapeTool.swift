@@ -58,8 +58,6 @@ nonisolated enum ShapeLineStyle: String, CaseIterable, Codable, Sendable {
     case solid = "Solid"
     case dashed = "Dashed"
     case longDash = "Long Dash"
-    case dashDot = "Dash Dot"
-    case longDashDot = "Long Dash Dot"
     case dotted = "Dotted"
 
     /// Alternating dash and gap lengths, in multiples of the line's width, as they look with their caps on: a dot
@@ -69,8 +67,6 @@ nonisolated enum ShapeLineStyle: String, CaseIterable, Codable, Sendable {
         case .solid: []
         case .dashed: [3, 2]
         case .longDash: [7, 2]
-        case .dashDot: [3, 1.5, 1, 1.5]
-        case .longDashDot: [6, 2, 1, 2]
         case .dotted: [1, 1]
         }
     }
@@ -87,8 +83,8 @@ nonisolated enum ShapeLineStyle: String, CaseIterable, Codable, Sendable {
 
 /// How the ends of a Line shape, and of each of its dashes, are finished.
 nonisolated enum ShapeLineCap: String, CaseIterable, Codable, Sendable {
-    case round = "Round"
     case square = "Square"
+    case round = "Round"
     var cgLineCap: CGLineCap { self == .round ? .round : .square }
 
     /// How far past its two points a line of `width` reaches along each axis. A round cap reaches half the width
@@ -125,8 +121,8 @@ nonisolated struct LayerShapeStyle: Codable, Equatable, Sendable {
     var lineWidth: CGFloat? = nil
     var start: CGPoint? = nil
     var end: CGPoint? = nil
-    /// A line's dash pattern and caps (format version 15). Nil on lines drawn before they could be chosen, and on
-    /// solid, round-capped ones: they save as lines always have.
+    /// A line's dash pattern and caps (format version 15). A nil style is solid; a nil cap is round, as every line
+    /// was before caps could be chosen, so those save as lines always have.
     var lineStyle: ShapeLineStyle? = nil
     var lineCap: ShapeLineCap? = nil
     var color: PaletteColor { PaletteColor(red: red, green: green, blue: blue) }
@@ -165,7 +161,7 @@ struct ShapeDraft: Equatable {
     var smoothing = false
     /// A line's dashes and caps, fixed when the drag starts.
     var lineStyle = ShapeLineStyle.solid
-    var lineCap = ShapeLineCap.round
+    var lineCap = ShapeLineCap.square
 }
 
 extension EditorSession {

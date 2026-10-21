@@ -243,7 +243,7 @@ final class EditorSession {
     var shapeLineWidth: Double = 4
     /// A Line shape's dash pattern and the finish on its ends (and on each dash).
     var shapeLineStyle = ShapeLineStyle.solid
-    var shapeLineCap = ShapeLineCap.round
+    var shapeLineCap = ShapeLineCap.square
     /// The shape being dragged out with the Shape tool, before it becomes a layer.
     var shapeDraft: ShapeDraft?
     var selectionModeChoice = SelectionMode.replace
