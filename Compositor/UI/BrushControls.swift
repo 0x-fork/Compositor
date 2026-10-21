@@ -49,6 +49,14 @@ struct BrushControls: View {
                         session.brushSettings.diameter = value.isFinite ? min(2000, max(1, value)) : 40
                     }
                     .unitSuffix("px")
+                    // A pen's pressure, as Photoshop's buttons beside Size and Opacity: only once a tablet pen has
+                    // been used since the app opened.
+                    if session.tool == .brush, PenInput.shared.seen {
+                        Toggle(isOn: $session.brushSettings.pressureSize) { Image(systemName: "pencil.tip.crop.circle") }
+                            .toggleStyle(.button)
+                            .help("Pen pressure sets the size: a light touch paints a thinner line")
+                            .accessibilityLabel("Pressure for size")
+                    }
                     Text("Hardness").scrubbable(sensitivity: 0.01, value: $session.brushSettings.hardness, range: 0...1)
                     Slider(value: $session.brushSettings.hardness, in: 0...1).frame(width: 100)
                     TextField("Hardness", value: Binding<Double>(get: { Double(session.brushSettings.hardness * 100) },
@@ -69,14 +77,8 @@ struct BrushControls: View {
                                 change: { session.brushSettings.opacity = CGFloat(min(100, max(1, $0)) / 100) })
                     .help("Press 1–9 for 10–90%, 0 for 100%")
                     .unitSuffix("%")
-                    // A pen's pressure, as Photoshop's two buttons beside Size and Opacity: only once a tablet pen
-                    // has been used since the app opened.
                     if session.tool == .brush, PenInput.shared.seen {
-                        Toggle(isOn: $session.brushSettings.pressureSize) { Image(systemName: "scribble.variable") }
-                            .toggleStyle(.button)
-                            .help("Pen pressure sets the size: a light touch paints a thinner line")
-                            .accessibilityLabel("Pressure for size")
-                        Toggle(isOn: $session.brushSettings.pressureOpacity) { Image(systemName: "drop.halffull") }
+                        Toggle(isOn: $session.brushSettings.pressureOpacity) { Image(systemName: "pencil.tip.crop.circle") }
                             .toggleStyle(.button)
                             .help("Pen pressure sets the opacity: a light touch paints fainter, up to the brush’s Opacity")
                             .accessibilityLabel("Pressure for opacity")
