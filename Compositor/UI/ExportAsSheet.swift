@@ -90,10 +90,6 @@ struct ExportAsSheet: View {
     @State private var gifPreviewImage: CGImage?
     @State private var gifPreviewIndex = 0
     @State private var isGIFPreviewPlaying = true
-    @State private var showsGIFFrameDelays = false
-    @FocusState private var focusedGIFDelay: Int?
-    @State private var gifUniformDraft: String?
-    @State private var gifFrameDrafts: [Int: String] = [:]
     private var isReady: Bool { result?.settings == settings && error == nil }
     /// The preview's zoom, 1 being 100%; nil fits the whole image.
     @State private var zoom: Double?
@@ -214,67 +210,6 @@ struct ExportAsSheet: View {
                     }
                 }
                 if format == .gif {
-                    if !(snapshot?.gifExportLayers ?? []).isEmpty {
-                        GridRow {
-                            Text("Timeline")
-                            Picker("Timeline", selection: $gifOptions.layerID) {
-                                Text("All").tag(nil as UUID?)
-                                ForEach((snapshot?.gifExportLayers ?? []), id: \.id) { layer in
-                                    Text(layer.name).tag(Optional(layer.id))
-                                }
-                            }.labelsHidden().fixedSize()
-                                .help("All animates visible timelines through the longest one; shorter animations hold their last frame. Choose one to animate it alone.")
-                                .accessibilityIdentifier("gifExportTimeline")
-                        }
-                    }
-                    GridRow {
-                        Text("Delay")
-                        if gifOptions.layerID == nil, !(snapshot?.gifExportLayers ?? []).isEmpty {
-                            Text("Saved timeline delays").foregroundStyle(.secondary)
-                                .help("Each animation uses its own saved delays. Shorter animations hold their last frame.")
-                        } else {
-                            HStack(spacing: 8) {
-                                Picker("Delay", selection: gifDelaySettings.mode) {
-                                    ForEach(GIFDelayMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                                }.pickerStyle(.segmented).labelsHidden().fixedSize()
-                                    .accessibilityIdentifier("gifExportDelayMode")
-                                if gifDelaySettings.wrappedValue.mode == .perFrame {
-                                    Text(gifSourceDelaySummary).foregroundStyle(.secondary).monospacedDigit()
-                                    Button("Edit…") { gifFrameDrafts = [:]; showsGIFFrameDelays = true }
-                                        .help("Change individual frame delays for this export.")
-                                        .accessibilityIdentifier("gifExportEditDelays")
-                                        .popover(isPresented: $showsGIFFrameDelays) {
-                                            GIFFrameDelaysPopover(frames: gifFrames, timing: gifFrameDelaySettings, drafts: $gifFrameDrafts)
-                                        }
-                                } else {
-                                    GIFDelayField(milliseconds: gifDelayMilliseconds, draft: $gifUniformDraft,
-                                                  focus: $focusedGIFDelay, index: 0, scrubsUnit: true)
-                                        .frame(width: 80)
-                                        .help("Delay for every frame before export speed is applied.")
-                                        .accessibilityLabel("Delay for every frame in milliseconds")
-                                        .accessibilityIdentifier("gifExportUniformDelay")
-                                }
-                            }.disabled(!gifHasAnimation)
-                        }
-                    }
-                    GridRow {
-                        Text("Speed")
-                        HStack(spacing: 8) {
-                            Slider(value: gifSpeedPosition, in: GIFPlaybackSpeed.sliderRange)
-                                .frame(width: 220)
-                                .help("Scale export timing. The center is normal speed.")
-                                .accessibilityLabel("Animation export playback speed")
-                                .accessibilityValue("\(gifSpeedLabel) times")
-                                .accessibilityIdentifier("gifExportSpeed")
-                            Button { gifOptions.timing.speedMultiplier = 1 } label: {
-                                Text("\(gifSpeedLabel)×").monospacedDigit().frame(width: 44)
-                            }
-                            .help("Reset export speed to 1.0×.")
-                            if gifSchedule?.usesMinimumDelay == true {
-                                Text("Minimum delay: 20 ms").font(.caption).foregroundStyle(.secondary)
-                            }
-                        }.disabled(!gifHasAnimation)
-                    }
                     GridRow {
                         Text("Loop")
                         Picker("Loop", selection: $gifOptions.loopsForever) {
@@ -323,7 +258,7 @@ struct ExportAsSheet: View {
                     if let result { finish((result.data, result.settings.format)) }
                 }
                     .configuredNativeShortcut(.return)
-                    .disabled(!isReady || showsGIFFrameDelays || (format == .gif && gifUniformDraft != nil))
+                    .disabled(!isReady)
             }
             if let error { Text(error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true).frame(maxWidth: JPEGPreview.frame.width, alignment: .leading) }
         }
@@ -341,26 +276,6 @@ struct ExportAsSheet: View {
         }
         .onDisappear { session.previewZoom = nil }
         .onChange(of: format) { setScale(Double(width) / Double(raster.image.width)) }
-        .onChange(of: gifOptions.layerID) { _, id in
-            showsGIFFrameDelays = false
-            gifUniformDraft = nil
-            gifFrameDrafts = [:]
-            focusedGIFDelay = nil
-            gifOptions.timing.delays = id.flatMap { snapshot?.animations[$0]?.timing }
-        }
-        .onChange(of: showsGIFFrameDelays) { wasShown, isShown in
-            if wasShown, !isShown, !gifFrameDrafts.isEmpty {
-                gifDelaySettings.wrappedValue = GIFFrameDelaysPopover.confirmedTiming(gifDelaySettings.wrappedValue,
-                    drafts: gifFrameDrafts, frames: gifFrames)
-                gifFrameDrafts = [:]
-            }
-        }
-        .onChange(of: gifDelaySettings.wrappedValue.mode) {
-            let value = GIFDelayField.confirmedMilliseconds(gifUniformDraft, previous: gifDelayMilliseconds.wrappedValue)
-            gifUniformDraft = nil
-            focusedGIFDelay = nil
-            if value != gifDelayMilliseconds.wrappedValue { gifDelayMilliseconds.wrappedValue = value }
-        }
         .task(id: settings) {
             let requested = settings
             error = nil
@@ -446,47 +361,18 @@ struct ExportAsSheet: View {
         let isPlaying: Bool
         let isReady: Bool
     }
-    private var gifFrames: [GIFTimelineFrame] { gifOptions.layerID.flatMap { snapshot?.animations[$0]?.sourceFrames } ?? [] }
     private var gifSchedule: GIFExportSchedule? { snapshot.flatMap { try? GIFExportSchedule($0, options: gifOptions) } }
     private var gifHasAnimation: Bool {
-        if gifOptions.layerID != nil { return gifFrames.count > 1 }
         guard let snapshot else { return false }
         return snapshot.gifExportLayers.contains { (snapshot.animations[$0.id]?.frames.count ?? 0) > 1 }
     }
     private var gifSummary: String {
-        guard gifOptions.layerID != nil || !(snapshot?.gifExportLayers ?? []).isEmpty else { return "1 frame · Still canvas" }
+        guard !(snapshot?.gifExportLayers ?? []).isEmpty else { return "1 frame · Still canvas" }
         guard let schedule = gifSchedule else { return "—" }
         let count = "\(schedule.frames.count) \(schedule.frames.count == 1 ? "frame" : "frames")"
         let durations = schedule.durations
         return "\(count) · \(durations.reduce(0, +).formatted(.number.precision(.fractionLength(0...2)))) s"
     }
-    private var gifSourceDelaySummary: String {
-        let delays = gifFrames.map { $0.duration * 1000 }
-        guard let shortest = delays.min(), let longest = delays.max() else { return "" }
-        let format = FloatingPointFormatStyle<Double>.number.precision(.fractionLength(0...2))
-        let range = shortest == longest ? shortest.formatted(format) : "\(shortest.formatted(format))–\(longest.formatted(format))"
-        return "Original \(range) ms"
-    }
-    private var gifDelaySettings: Binding<GIFFrameTiming> {
-        Binding(get: { gifOptions.timing.delays ?? GIFFrameTiming() }, set: { gifOptions.timing.delays = $0 })
-    }
-    /// A disappearing editor must not write its drafts into a newly chosen timeline.
-    private var gifFrameDelaySettings: Binding<GIFFrameTiming> {
-        let layerID = gifOptions.layerID
-        return Binding(get: { gifDelaySettings.wrappedValue }, set: { value in
-            if gifOptions.layerID == layerID { gifDelaySettings.wrappedValue = value }
-        })
-    }
-    private var gifDelayMilliseconds: Binding<Double> {
-        Binding(get: { gifDelaySettings.wrappedValue.uniformDelay * 1000 },
-                set: { gifDelaySettings.wrappedValue.uniformDelay = $0 / 1000 })
-    }
-    private var gifSpeedPosition: Binding<Double> {
-        Binding(get: { log2(gifOptions.timing.speedMultiplier) }, set: { position in
-            gifOptions.timing.speedMultiplier = GIFPlaybackSpeed(position: abs(position) < 0.05 ? 0 : position).multiplier
-        })
-    }
-    private var gifSpeedLabel: String { gifOptions.timing.speedMultiplier.formatted(.number.precision(.fractionLength(1...2))) }
 
     /// RGB or CMYK: one small menu, as few need CMYK. The profile CMYK goes through is View › CMYK › Profile's, named in
     /// the line under the settings.
