@@ -111,7 +111,7 @@ struct ExportAsSheet: View {
                             gifPreviewImage = result.preview
                         }
                         isGIFPreviewPlaying.toggle()
-                    } label: { Image(systemName: isGIFPreviewPlaying ? "pause.fill" : "play.fill").foregroundStyle(.green) }
+                    } label: { Image(systemName: isGIFPreviewPlaying ? "pause.fill" : "play.fill").foregroundStyle(.white) }
                         .disabled(!isReady)
                         .help(isGIFPreviewPlaying ? "Pause the animation preview." : "Play the animation preview.")
                         .accessibilityLabel(isGIFPreviewPlaying ? "Pause animation preview" : "Play animation preview")
@@ -406,7 +406,7 @@ struct ExportAsSheet: View {
             .pickerStyle(.inline).labelsHidden()
         }
         .menuStyle(.button).fixedSize()
-        .help("Other formats: GIF, TIFF and PDF\(others.contains(.exr) ? ", EXR to keep light brighter than white" : ""), and Channel Pack for game textures")
+        .help("Other formats: TIFF, PDF and GIF\(others.contains(.exr) ? ", EXR to keep light brighter than white" : ""), and Channel Pack for game textures")
         if chosen { menu.buttonStyle(.borderedProminent) } else { menu.buttonStyle(.bordered) }
     }
 

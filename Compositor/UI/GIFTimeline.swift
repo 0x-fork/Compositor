@@ -23,23 +23,29 @@ struct GIFTimeline: View {
     }
 
     var body: some View {
-        HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 10) {
+        HStack(spacing: 0) {
+            VStack(spacing: 8) {
                 Button(action: onTogglePlayback) {
-                    Image(systemName: isPlaying ? "pause.fill" : "play.fill").frame(width: 28, height: 22)
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 70, height: 40)
+                        .background(Color.white.opacity(0.1), in: Capsule())
+                        .contentShape(Capsule())
                 }
+                .buttonStyle(.plain)
                 .disabled(!canPlay)
                 .help(isPlaying ? "Pause" : "Play")
-                HStack(spacing: 4) {
-                    TextField("Delay", value: Binding(get: { delay.rounded() }, set: { setDelay($0) }),
-                              format: .number.precision(.fractionLength(0)))
-                        .frame(width: 52).multilineTextAlignment(.trailing)
-                        .disabled(!canEditTiming)
-                    Text("ms").foregroundStyle(.secondary)
+                // The delay as a menu of common ones, as the Layers panel's adjustment button offers its kinds.
+                Menu { delayMenu } label: {
+                    Text(timing.mode == .uniform ? "\(Int(delay.rounded()))ms" : "Original")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
                 }
-                .help("How long each frame shows, from 20 ms")
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                .disabled(!canEditTiming)
+                .help("How long each frame shows")
             }
-            .padding(.leading, 18)
+            // The same room either side of the button.
+            .padding(.horizontal, 18)
             Divider()
             ScrollViewReader { scroller in
                 ScrollView(.horizontal) {
@@ -100,6 +106,26 @@ struct GIFTimeline: View {
         }
         .id(frame.index)
         .accessibilityLabel("Frame \(number)")
+    }
+
+    /// Every frame for the same time, from a fast 20 ms up to a second, or each for the GIF's own.
+    @ViewBuilder private var delayMenu: some View {
+        Toggle("Original", isOn: Binding(get: { timing.mode != .uniform }, set: { on in
+            guard on else { return }
+            var original = timing
+            original.mode = .perFrame
+            onChangeTiming(original)
+        }))
+        Divider()
+        ForEach([20, 33, 40, 50, 67, 80, 100, 125, 150, 200, 250, 500, 1000], id: \.self) { milliseconds in
+            Toggle("\(milliseconds) ms · \(fps(milliseconds)) fps", isOn: Binding(
+                get: { timing.mode == .uniform && Int(delay.rounded()) == milliseconds },
+                set: { if $0 { setDelay(Double(milliseconds)) } }))
+        }
+    }
+
+    private func fps(_ milliseconds: Int) -> String {
+        (1000 / Double(milliseconds)).formatted(.number.precision(.fractionLength(0...1)))
     }
 
     /// One delay for every frame, kept within what GIF can store.

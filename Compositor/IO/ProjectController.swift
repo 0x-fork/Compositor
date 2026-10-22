@@ -415,7 +415,8 @@ final class ProjectController {
 
 /// What File › Export As… writes.
 enum ExportFormat: String, CaseIterable {
-    case png = "PNG", jpeg = "JPEG", gif = "GIF", tiff = "TIFF", pdf = "PDF", exr = "EXR"
+    // In the order Export As lists them: GIF after PDF, as fewer need it.
+    case png = "PNG", jpeg = "JPEG", tiff = "TIFF", pdf = "PDF", gif = "GIF", exr = "EXR"
     /// Layers packed into a PNG's red, green, blue and alpha, for game textures (see `ChannelPack`).
     case channelPack = "Channel Pack"
     var type: UTType {
