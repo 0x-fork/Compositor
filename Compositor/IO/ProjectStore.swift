@@ -67,33 +67,30 @@ nonisolated struct ProjectGIFRecord: Codable, Sendable {
     let sourceFile: String
     let selectedFrameIndex: Int
     var geometry: GIFFrameGeometry? = nil
-    var frameMasks: [ProjectGIFMaskRecord] = []
     var framePixels: [ProjectGIFPixelsRecord] = []
     var deletedFrameIndices: [Int] = []
     var frameOrder: [GIFFrameReference]? = nil
     var timing: ProjectGIFTimingRecord? = nil
 
     init(sourceFile: String, selectedFrameIndex: Int, geometry: GIFFrameGeometry? = nil,
-         frameMasks: [ProjectGIFMaskRecord] = [], framePixels: [ProjectGIFPixelsRecord] = [],
+         framePixels: [ProjectGIFPixelsRecord] = [],
          deletedFrameIndices: [Int] = [], frameOrder: [GIFFrameReference]? = nil, timing: ProjectGIFTimingRecord? = nil) {
         self.sourceFile = sourceFile
         self.selectedFrameIndex = selectedFrameIndex
         self.geometry = geometry
-        self.frameMasks = frameMasks
         self.framePixels = framePixels
         self.deletedFrameIndices = deletedFrameIndices
         self.frameOrder = frameOrder
         self.timing = timing
     }
 
-    private enum CodingKeys: String, CodingKey { case sourceFile, selectedFrameIndex, geometry, frameMasks, framePixels, deletedFrameIndices, frameOrder, timing }
+    private enum CodingKeys: String, CodingKey { case sourceFile, selectedFrameIndex, geometry, framePixels, deletedFrameIndices, frameOrder, timing }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         sourceFile = try values.decode(String.self, forKey: .sourceFile)
         selectedFrameIndex = try values.decode(Int.self, forKey: .selectedFrameIndex)
         geometry = try values.decodeIfPresent(GIFFrameGeometry.self, forKey: .geometry)
-        frameMasks = try values.decodeIfPresent([ProjectGIFMaskRecord].self, forKey: .frameMasks) ?? []
         framePixels = try values.decodeIfPresent([ProjectGIFPixelsRecord].self, forKey: .framePixels) ?? []
         deletedFrameIndices = try values.decodeIfPresent([Int].self, forKey: .deletedFrameIndices) ?? []
         frameOrder = try values.decodeIfPresent([GIFFrameReference].self, forKey: .frameOrder)
@@ -135,40 +132,12 @@ nonisolated struct ProjectGIFPixelsRecord: Codable, Sendable {
     let imageFile: String
 }
 
-nonisolated struct ProjectGIFMaskRecord: Codable, Sendable {
-    let index: Int
-    let maskFile: String
-    var isEnabled = true
-    var placement: LayerTransform? = nil
-    var isLinked = true
-
-    init(index: Int, maskFile: String, isEnabled: Bool = true, placement: LayerTransform? = nil, isLinked: Bool = true) {
-        self.index = index
-        self.maskFile = maskFile
-        self.isEnabled = isEnabled
-        self.placement = placement
-        self.isLinked = isLinked
-    }
-
-    private enum CodingKeys: String, CodingKey { case index, maskFile, isEnabled, placement, isLinked }
-
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        index = try values.decode(Int.self, forKey: .index)
-        maskFile = try values.decode(String.self, forKey: .maskFile)
-        isEnabled = try values.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
-        placement = try values.decodeIfPresent(LayerTransform.self, forKey: .placement)
-        isLinked = try values.decodeIfPresent(Bool.self, forKey: .isLinked) ?? true
-    }
-}
-
 nonisolated struct ProjectSnapshot: @unchecked Sendable {
     // Snapshot dictionaries are value copies; their CGImages and GIF sources are immutable across actors.
     let manifest: ProjectManifest
     let images: [UUID: ImportedImage]
     var masks: [UUID: ImportedImage] = [:]
     var animations: [UUID: GIFAnimation] = [:]
-    var frameMasks: [UUID: [Int: LayerMask]] = [:]
 }
 
 nonisolated enum ProjectError: LocalizedError {
@@ -194,8 +163,7 @@ actor ProjectStore {
     func save(_ snapshot: ProjectSnapshot, to url: URL, quickLook: QuickLookImages? = nil) throws {
         try validate(snapshot.manifest)
         let animatedIDs = Set(snapshot.manifest.layers.filter { $0.gif != nil }.map(\.id))
-        guard Set(snapshot.animations.keys) == animatedIDs,
-              Set(snapshot.frameMasks.keys).isSubset(of: animatedIDs) else { throw ProjectError.invalid }
+        guard Set(snapshot.animations.keys) == animatedIDs else { throw ProjectError.invalid }
         var images: [String: FileWrapper] = [:]
         var pixels = 0, maskPixels = 0
         var gifBytes = 0, thumbnailPixels = 0
@@ -229,20 +197,11 @@ actor ProjectStore {
             }
             try validateAnimation(animation, record: gif, image: image)
             try checkGIFBudget(animation.source, bytes: &gifBytes, thumbnails: &thumbnailPixels)
-            let masks = snapshot.frameMasks[layer.id] ?? [:]
-            guard Set(masks.keys) == Set(gif.frameMasks.map(\.index)) else { throw ProjectError.invalid }
             images[gif.sourceFile] = FileWrapper(regularFileWithContents: animation.source.data)
             for record in gif.framePixels {
                 guard let asset = animation.framePixels[record.index] else { throw ProjectError.missingImage }
                 try checkSize(width: asset.image.width, height: asset.image.height, used: &pixels)
                 images[record.imageFile] = FileWrapper(regularFileWithContents: try pngData(asset.image))
-            }
-            for record in gif.frameMasks {
-                guard let mask = masks[record.index], LayerMask.isValid(mask.asset.image),
-                      mask.isEnabled == record.isEnabled, mask.placement == record.placement,
-                      mask.isLinked == record.isLinked else { throw ProjectError.invalid }
-                try checkSize(width: mask.asset.image.width, height: mask.asset.image.height, used: &maskPixels)
-                images[record.maskFile] = FileWrapper(regularFileWithContents: try pngData(mask.asset.image))
             }
         }
         let encoder = JSONEncoder()
@@ -300,7 +259,6 @@ actor ProjectStore {
         var images: [UUID: ImportedImage] = [:]
         var masks: [UUID: ImportedImage] = [:]
         var animations: [UUID: GIFAnimation] = [:]
-        var frameMasks: [UUID: [Int: LayerMask]] = [:]
         var pixels = 0, maskPixels = 0
         var gifBytes = 0, thumbnailPixels = 0
         for layer in manifest.layers {
@@ -364,17 +322,8 @@ actor ProjectStore {
             try validateAnimation(animation, record: gif, image: image)
             try checkGIFBudget(source, bytes: &gifBytes, thumbnails: &thumbnailPixels)
             animations[layer.id] = animation
-            var loadedMasks: [Int: LayerMask] = [:]
-            for record in gif.frameMasks {
-                let maskFile = url.appendingPathComponent("images").appendingPathComponent(record.maskFile)
-                try checkFile(maskFile, inside: url, maximumBytes: 512 * 1024 * 1024)
-                let asset = try readPNG(maskFile, name: "Frame Mask", isMask: true, used: &maskPixels)
-                loadedMasks[record.index] = LayerMask(asset: asset, isEnabled: record.isEnabled,
-                                                    placement: record.placement, isLinked: record.isLinked)
-            }
-            if !loadedMasks.isEmpty { frameMasks[layer.id] = loadedMasks }
         }
-        return ProjectSnapshot(manifest: manifest, images: images, masks: masks, animations: animations, frameMasks: frameMasks)
+        return ProjectSnapshot(manifest: manifest, images: images, masks: masks, animations: animations)
     }
 
     private func validate(_ manifest: ProjectManifest) throws {
@@ -396,8 +345,7 @@ actor ProjectStore {
                       layer.adjustment == nil, layer.text == nil, layer.shape == nil,
                       gif.sourceFile == "\(layer.id.uuidString).gif",
                       (0..<identityLimit).contains(gif.selectedFrameIndex),
-                      gif.geometry.map(\.isValid) ?? true,
-                      gif.frameMasks.count <= GIFTimelineLimits.maxFrames else { throw ProjectError.invalid }
+                      gif.geometry.map(\.isValid) ?? true else { throw ProjectError.invalid }
                 var indices = Set<Int>()
                 guard gif.deletedFrameIndices.isEmpty || manifest.version >= 17,
                       gif.deletedFrameIndices.count <= GIFTimelineLimits.maxFrames else { throw ProjectError.invalid }
@@ -419,11 +367,6 @@ actor ProjectStore {
                 }
                 if let timing = gif.timing {
                     guard manifest.version >= 17, timing.isValid else { throw ProjectError.invalid }
-                }
-                for mask in gif.frameMasks {
-                    guard (0..<identityLimit).contains(mask.index), indices.insert(mask.index).inserted,
-                          mask.maskFile == "\(layer.id.uuidString).frame-\(mask.index).mask.png",
-                          mask.placement.map(\.isValid) ?? true else { throw ProjectError.invalid }
                 }
                 guard gif.framePixels.count <= GIFTimelineLimits.maxFrames else { throw ProjectError.invalid }
                 indices.removeAll()
@@ -514,7 +457,6 @@ actor ProjectStore {
               !source.frames.isEmpty, source.frames.count <= GIFTimelineLimits.maxFrames,
               record.deletedFrameIndices.allSatisfy({ source.frames.indices.contains($0) }),
               animation.containsFrame(record.selectedFrameIndex),
-              record.frameMasks.allSatisfy({ animation.containsFrame($0.index) }),
               Set(animation.framePixels.keys) == Set(record.framePixels.map(\.index)),
               animation.framePixels.allSatisfy({ index, asset in
                   animation.containsFrame(index) && asset.deep == nil && asset.image.bitsPerComponent <= 8

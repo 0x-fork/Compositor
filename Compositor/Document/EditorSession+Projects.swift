@@ -7,7 +7,6 @@ extension EditorSession {
         var images: [UUID: ImportedImage] = [:]
         var masks: [UUID: ImportedImage] = [:]
         var animations: [UUID: GIFAnimation] = [:]
-        var frameMasks: [UUID: [Int: LayerMask]] = [:]
         let layers = document.layers.map { layer in
             let asset = displayedAsset(for: layer)
             if let asset { images[layer.id] = asset }
@@ -15,14 +14,8 @@ extension EditorSession {
             var gif: ProjectGIFRecord?
             if let animation = currentGIFAnimation(for: layer) {
                 animations[layer.id] = animation
-                frameMasks[layer.id] = layer.gifFrameMasks
-                let records = layer.gifFrameMasks.keys.sorted().compactMap { index -> ProjectGIFMaskRecord? in
-                    guard let mask = layer.gifFrameMasks[index] else { return nil }
-                    return ProjectGIFMaskRecord(index: index, maskFile: "\(layer.id.uuidString).frame-\(index).mask.png",
-                                                isEnabled: mask.isEnabled, placement: mask.placement, isLinked: mask.isLinked)
-                }
                 gif = ProjectGIFRecord(sourceFile: "\(layer.id.uuidString).gif", selectedFrameIndex: animation.selectedFrameIndex,
-                    geometry: animation.geometry, frameMasks: records,
+                    geometry: animation.geometry,
                     framePixels: animation.framePixels.keys.sorted().map {
                         ProjectGIFPixelsRecord(index: $0, imageFile: "\(layer.id.uuidString).frame-\($0).png")
                     }, deletedFrameIndices: animation.deletedFrameIndices.sorted(), frameOrder: animation.frameOrder,
@@ -34,7 +27,7 @@ extension EditorSession {
         return ProjectSnapshot(manifest: ProjectManifest(resolution: document.resolution, documentID: document.id, width: document.width,
             height: document.height, activeLayerID: activeLayerID, layers: layers,
             guides: document.guides.isEmpty ? nil : document.guides), images: images, masks: masks,
-            animations: animations, frameMasks: frameMasks)
+            animations: animations)
     }
 
     /// Called only after the entire package has successfully validated and loaded.
@@ -102,11 +95,11 @@ extension ProjectSnapshot {
     var documentLayers: [ImageLayer] {
         manifest.layers.map {
             ImageLayer(id: $0.id, asset: images[$0.id], name: $0.name,
-                       isVisible: $0.isVisible, transform: $0.transform, parentID: $0.parentID, isGroup: $0.isGroup == true, opacity: $0.opacity ?? 1, blendMode: $0.blendMode ?? .normal, mask: sharedMask(for: $0), maskSourceID: $0.maskSourceID, adjustment: $0.adjustment,
+                       isVisible: $0.isVisible, transform: $0.transform, parentID: $0.parentID, isGroup: $0.isGroup == true, opacity: $0.opacity ?? 1, blendMode: $0.blendMode ?? .normal, mask: mask(for: $0), maskSourceID: $0.maskSourceID, adjustment: $0.adjustment,
                        shape: LayerShape.loaded($0.shape, image: images[$0.id]?.image),
                        effects: $0.effects,
                        text: LayerText.loaded($0.text, image: images[$0.id]?.image),
-                       gifFrameMasks: frameMasks[$0.id] ?? [:], gifAnimation: animations[$0.id])
+                       gifAnimation: animations[$0.id])
         }
     }
 }

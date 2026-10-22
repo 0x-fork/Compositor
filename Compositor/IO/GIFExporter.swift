@@ -80,7 +80,7 @@ actor GIFExporter {
                 framePositions[index] = framePosition
             }
             let captured = ProjectSnapshot(manifest: snapshot.manifest, images: images, masks: snapshot.masks,
-                                           animations: animations, frameMasks: snapshot.frameMasks)
+                                           animations: animations)
             let raster = try await ImageExporter.shared.render(captured)
             let sized = try await ImageExporter.shared.resized(raster, width: width, height: height)
             let image: CGImage

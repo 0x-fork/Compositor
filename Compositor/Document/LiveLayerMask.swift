@@ -139,11 +139,8 @@ extension EditorSession {
                 if let asset = baked[document!.layers[i].id] {
                     let layer = document!.layers[i]
                     if layer.gifAnimation != nil {
-                        // Bake preserves the displayed frame and its mask as a still layer after its source is deleted.
-                        document?.layers[i].mask = displayedLayer(for: layer).mask
+                        // Bake keeps the displayed frame as a still layer once its source is gone.
                         document?.layers[i].gifAnimation = nil
-                        document?.layers[i].gifFrameMasks = [:]
-                        if activeLayerID == layer.id { isGIFFrameMaskSelected = false }
                     }
                     document?.layers[i].asset = asset
                 }

@@ -60,15 +60,10 @@ extension EditorSession {
         clip?.apply(to: context)
         let transform = displayedTransform(for: layer)
         if mask, let owned = selectedMask(for: layer) {
-            if isGIFFrameMaskSelected && layer.id == activeLayerID {
-                let placed = owned.placement ?? transform
-                LayerRenderer.draw(owned.asset.image, transform: placed, center: placed.center, in: context)
-            } else {
-                let placement = displayedMaskPlacement(for: layer)
-                context.setFillColor(gray: placement == nil ? 0 : LayerMask.background(of: owned.asset.thumbnail), alpha: 1)
-                context.fill(region)
-                LayerRenderer.drawCoverage(owned.asset.image, transform: placement ?? transform, in: context)
-            }
+            let placement = displayedMaskPlacement(for: layer)
+            context.setFillColor(gray: placement == nil ? 0 : LayerMask.background(of: owned.asset.thumbnail), alpha: 1)
+            context.fill(region)
+            LayerRenderer.drawCoverage(owned.asset.image, transform: placement ?? transform, in: context)
         } else if !mask, let image = deep ?? displayedAsset(for: layer)?.image {
             LayerRenderer.draw(image, transform: transform, center: transform.center, in: context)
         } else { return nil }
@@ -275,7 +270,7 @@ extension EditorSession {
                 isGroup: original.isGroup, opacity: original.opacity, blendMode: original.blendMode,
                 mask: original.mask, maskSourceID: original.maskSourceID.map { mapping[$0] ?? $0 },
                 adjustment: original.adjustment, shape: original.shape, effects: original.effects, text: original.text,
-                gifFrameMasks: original.gifFrameMasks, gifAnimation: currentGIFAnimation(for: original))
+                gifAnimation: currentGIFAnimation(for: original))
         }
         document?.layers.insert(contentsOf: copies, at: index + 1)
         for original in originals where collapsedGroupIDs.contains(original.id) {
@@ -287,13 +282,6 @@ extension EditorSession {
     /// Each animation layer embeds its source and rebuilds its thumbnails on opening, even when runtime data is shared.
     func canRetainGIFSources(in layers: [ImageLayer]) -> Bool {
         var bytes = 0, thumbnailPixels = 0
-        if layers.contains(where: { !$0.gifFrameMasks.isEmpty }) {
-            let masks = layers.reduce(0) { total, layer in
-                total + (layer.mask.map { $0.asset.image.width * $0.asset.image.height } ?? 0)
-                    + layer.gifFrameMasks.values.reduce(0) { $0 + $1.asset.image.width * $1.asset.image.height }
-            }
-            guard masks <= DocumentLimits.documentPixelBudget else { return false }
-        }
         if layers.contains(where: { $0.gifAnimation?.framePixels.isEmpty == false }) {
             let pixels = layers.reduce(0) { total, layer in
                 total + (layer.asset.map { $0.image.width * $0.image.height } ?? 0)

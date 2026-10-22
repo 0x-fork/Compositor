@@ -21,7 +21,7 @@ actor ImageResizer {
         if old.width == options.width && old.height == options.height {
             manifest.layers = old.layers
             return ProjectSnapshot(manifest: manifest, images: snapshot.images, masks: snapshot.masks,
-                                   animations: snapshot.animations, frameMasks: snapshot.frameMasks)
+                                   animations: snapshot.animations)
         }
         guard options.width * options.height <= DocumentLimits.maxSurfacePixels else { throw ProjectError.tooLarge }
         let sx = CGFloat(options.width) / CGFloat(old.width)
@@ -33,7 +33,6 @@ actor ImageResizer {
         var images: [UUID: ImportedImage] = [:]
         var masks: [UUID: ImportedImage] = [:]
         var animations = snapshot.animations
-        var frameMasks: [UUID: [Int: LayerMask]] = [:]
         var usedPixels = 0, usedMaskPixels = 0
         for layer in old.layers {
             try Task.checkCancellation()
@@ -59,17 +58,6 @@ actor ImageResizer {
                 masks[layer.id] = try resizedMask(source, placement: layer.maskPlacement, from: layer.transform,
                     to: transform, scaleX: sx, scaleY: sy, usedPixels: &usedMaskPixels)
             }
-            if let ownedMasks = snapshot.frameMasks[layer.id] {
-                var resized: [Int: LayerMask] = [:]
-                for (index, owned) in ownedMasks {
-                    let asset = try resizedMask(owned.asset, placement: owned.placement, from: layer.transform,
-                        to: transform, scaleX: sx, scaleY: sy, usedPixels: &usedMaskPixels)
-                    var mask = owned.replacing(asset)
-                    mask.placement = owned.placement.map { $0.placing($0.unitToDocument.concatenating(CGAffineTransform(scaleX: sx, y: sy))) }
-                    resized[index] = mask
-                }
-                frameMasks[layer.id] = resized
-            }
             var gif = layer.gif
             if let animation = snapshot.animations[layer.id] {
                 var resized = animation.resizing(from: layer.transform, to: transform, scaleX: sx, scaleY: sy)
@@ -82,19 +70,12 @@ actor ImageResizer {
                 animations[layer.id] = resized
                 gif?.geometry = resized.geometry
             }
-            if var record = gif {
-                for index in record.frameMasks.indices {
-                    record.frameMasks[index].placement = frameMasks[layer.id]?[record.frameMasks[index].index]?.placement
-                }
-                gif = record
-            }
             manifest.layers.append(ProjectLayerRecord(id: layer.id, name: layer.name, isVisible: layer.isVisible,
                 transform: transform, imageFile: layer.imageFile, parentID: layer.parentID, isGroup: layer.isGroup, opacity: layer.opacity, blendMode: layer.blendMode, maskFile: layer.maskFile, maskEnabled: layer.maskEnabled, maskSourceID: layer.maskSourceID, adjustment: layer.adjustment,
                 maskPlacement: layer.maskPlacement.map { $0.placing($0.unitToDocument.concatenating(CGAffineTransform(scaleX: sx, y: sy))) },
                 maskLinked: layer.maskLinked, effects: layer.effects?.scaled(by: effectScale), gif: gif))
         }
-        return ProjectSnapshot(manifest: manifest, images: images, masks: masks,
-                               animations: animations, frameMasks: frameMasks)
+        return ProjectSnapshot(manifest: manifest, images: images, masks: masks, animations: animations)
     }
 
     private func resizedImage(_ source: ImportedImage, from original: LayerTransform, to transform: LayerTransform,

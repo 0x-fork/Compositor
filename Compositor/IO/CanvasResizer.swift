@@ -21,14 +21,7 @@ actor CanvasResizer {
             transform.origin.x += offset.x
             transform.origin.y += offset.y
             guard transform.isValid else { throw ProjectError.tooLarge }
-            var gif = layer.gif
-            if var animation = gif {
-                for index in animation.frameMasks.indices {
-                    animation.frameMasks[index].placement?.origin.x += offset.x
-                    animation.frameMasks[index].placement?.origin.y += offset.y
-                }
-                gif = animation
-            }
+            let gif = layer.gif
             manifest.layers.append(ProjectLayerRecord(id: layer.id, name: layer.name,
                 isVisible: layer.isVisible, transform: transform, imageFile: layer.imageFile, parentID: layer.parentID, isGroup: layer.isGroup, opacity: layer.opacity, blendMode: layer.blendMode, maskFile: layer.maskFile, maskEnabled: layer.maskEnabled, maskSourceID: layer.maskSourceID, adjustment: layer.adjustment,
                 maskPlacement: layer.maskPlacement.map { placement -> LayerTransform in
@@ -37,15 +30,6 @@ actor CanvasResizer {
                     moved.origin.y += offset.y
                     return moved
                 }, maskLinked: layer.maskLinked, shape: layer.shape, effects: layer.effects, text: layer.text, gif: gif))
-        }
-        var frameMasks = snapshot.frameMasks
-        for layerID in frameMasks.keys {
-            guard var masks = frameMasks[layerID] else { continue }
-            for index in masks.keys {
-                masks[index]?.placement?.origin.x += offset.x
-                masks[index]?.placement?.origin.y += offset.y
-            }
-            frameMasks[layerID] = masks
         }
         var images = snapshot.images
         // A colored extension is separate bottom-layer content. The old canvas
@@ -86,6 +70,6 @@ actor CanvasResizer {
                 imageFile: "\(id.uuidString).png"), at: 0)
         }
         return ProjectSnapshot(manifest: manifest, images: images, masks: snapshot.masks,
-                               animations: snapshot.animations, frameMasks: frameMasks)
+                               animations: snapshot.animations)
     }
 }

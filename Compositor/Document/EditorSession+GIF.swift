@@ -15,23 +15,6 @@ extension EditorSession {
         endEdit()
     }
 
-    /// The destination is the frame's final position after removing it from the sequence.
-    func moveGIFFrame(at frameIndex: Int, to destination: Int, for layerID: UUID) {
-        guard gifTimelineCanEditFrames, activeLayerID == layerID,
-              let layerIndex = document?.layers.firstIndex(where: { $0.id == layerID }),
-              var animation = document?.layers[layerIndex].gifAnimation else { return }
-        var order = animation.frameReferences
-        guard order.indices.contains(destination),
-              let position = order.firstIndex(where: { $0.index == frameIndex }), position != destination else { return }
-        pauseGIFForEditing(for: layerID)
-        order.insert(order.remove(at: position), at: destination)
-        animation.frameOrder = order
-        finishOpacityEdit()
-        beginEdit("Reorder GIF Frames")
-        document?.layers[layerIndex].gifAnimation = animation
-        endEdit()
-    }
-
     func duplicateGIFFrame(at frameIndex: Int, for layerID: UUID) async {
         guard gifTimelineCanEditFrames, activeLayerID == layerID, let layer = activeLayer,
               let animation = layer.gifAnimation, animation.frames.count < GIFTimelineLimits.maxFrames,
@@ -55,13 +38,10 @@ extension EditorSession {
         edited.timing.frameDelays[newIndex] = animation.timing.frameDelays[frameIndex]
         edited.selectedFrameIndex = newIndex
         current.gifAnimation = edited
-        current.gifFrameMasks[newIndex] = current.gifFrameMasks[frameIndex]
         current.asset = asset
         var layers = document?.layers ?? []
         layers[layerIndex] = current
-        guard canRetainGIFSources(in: layers),
-              (current.gifFrameMasks[newIndex].map { $0.asset.image.width * $0.asset.image.height } ?? 0)
-                <= DocumentLimits.documentPixelBudget - retainedMaskPixels else {
+        guard canRetainGIFSources(in: layers) else {
             brushError = ProjectError.tooLarge.localizedDescription
             return
         }
@@ -72,11 +52,6 @@ extension EditorSession {
         endEdit()
         brushRevision += 1
         refreshCanvasPreview?()
-    }
-
-    /// Keeps source composition and surviving delays intact; the remaining loop becomes shorter.
-    func deleteGIFFrame(at frameIndex: Int, for layerID: UUID) async {
-        await deleteGIFFrames(at: [frameIndex], for: layerID)
     }
 
     /// Validate the whole batch and its replacement preview before committing one deletion.
@@ -104,7 +79,6 @@ extension EditorSession {
             if animation.source.frames.indices.contains(index) { edited.deletedFrameIndices.insert(index) }
             edited.framePixels.removeValue(forKey: index)
             edited.timing.frameDelays.removeValue(forKey: index)
-            current.gifFrameMasks.removeValue(forKey: index)
         }
         edited.frameOrder?.removeAll { frameIndices.contains($0.index) }
         edited.selectedFrameIndex = nextIndex
@@ -118,7 +92,7 @@ extension EditorSession {
         refreshCanvasPreview?()
     }
 
-    /// A tool's input is the raw selected frame, without either of its masks baked in.
+    /// A tool's input is the raw selected frame, without its mask baked in.
     func pixelEditingLayer(for layer: ImageLayer) -> ImageLayer {
         guard layer.gifAnimation != nil else { return layer }
         var editing = layer

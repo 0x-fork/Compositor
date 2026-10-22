@@ -140,19 +140,11 @@ extension EditorSession {
             }
             // Only write over the layer the invert was computed from.
             guard let current = self.document?.layers[safe: index], current.id == layer.id else { return }
-            if mask, isGIFFrameMaskSelected, let frameIndex = selectedGIFFrameIndex(for: layer.id) {
-                guard current.gifFrameMasks[frameIndex]?.asset.image === layer.gifFrameMasks[frameIndex]?.asset.image else { return }
-            } else {
-                guard pixelEditTargetMatches(current, original: layer), current.mask?.asset.image === layer.mask?.asset.image else { return }
-            }
+            guard pixelEditTargetMatches(current, original: layer), current.mask?.asset.image === layer.mask?.asset.image else { return }
             let edited = mask ? nil : try layerByEditingPixels(current, asset: asset, transform: current.transform, mask: current.mask)
             beginEdit(mask ? "Invert Mask" : "Invert")
             if mask {
-                if isGIFFrameMaskSelected, let frameIndex = selectedGIFFrameIndex(for: layer.id) {
-                    self.document?.layers[index].gifFrameMasks[frameIndex] = current.gifFrameMasks[frameIndex]?.replacing(asset) ?? LayerMask(asset: asset)
-                } else {
-                    self.document?.layers[index].mask = current.mask.map { $0.replacing(asset) } ?? LayerMask(asset: asset)
-                }
+                self.document?.layers[index].mask = current.mask.map { $0.replacing(asset) } ?? LayerMask(asset: asset)
             } else if let edited { self.document?.layers[index] = edited }
             endEdit()
             brushRevision += 1

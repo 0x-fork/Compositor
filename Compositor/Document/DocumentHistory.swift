@@ -95,8 +95,7 @@ final class DocumentHistory {
     }
 
     private static func assets(of layer: ImageLayer) -> [ImportedImage] {
-        [layer.asset, layer.mask?.asset].compactMap { $0 } + layer.gifFrameMasks.values.map(\.asset)
-            + Array(layer.gifAnimation?.framePixels.values ?? [:].values)
+        [layer.asset, layer.mask?.asset].compactMap { $0 } + Array(layer.gifAnimation?.framePixels.values ?? [:].values)
     }
 
     /// Bytes retained only by history, excluding images in the live document.

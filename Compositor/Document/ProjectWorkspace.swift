@@ -288,7 +288,6 @@ final class ProjectWorkspace {
                         copied[i].mask = snapshot.mask(for: record)
                     }
                     copied[i].gifAnimation = nil
-                    copied[i].gifFrameMasks = [:]
                 }
                 copied[i].maskSourceID = nil
             }
@@ -315,15 +314,10 @@ final class ProjectWorkspace {
                 transform.origin.x += center.x-anchor.x; transform.origin.y += center.y-anchor.y
                 var mask = layer.mask
                 mask?.placement?.origin.x += center.x-anchor.x; mask?.placement?.origin.y += center.y-anchor.y
-                var frameMasks = layer.gifFrameMasks
-                for index in frameMasks.keys {
-                    frameMasks[index]?.placement?.origin.x += center.x-anchor.x
-                    frameMasks[index]?.placement?.origin.y += center.y-anchor.y
-                }
                 return ImageLayer(id: mapping[layer.id]!, asset: layer.asset, name: layer.name, isVisible: layer.isVisible,
                     transform: transform, parentID: layer.parentID.flatMap { mapping[$0] }, isGroup: layer.isGroup,
                     opacity: layer.opacity, blendMode: layer.blendMode, mask: mask, maskSourceID: layer.maskSourceID.flatMap { mapping[$0] }, adjustment: layer.adjustment, shape: layer.shape, effects: layer.effects, text: layer.text,
-                    gifFrameMasks: frameMasks, gifAnimation: layer.gifAnimation)
+                    gifAnimation: layer.gifAnimation)
             }
             target.session.isProjectBusy = false
             target.session.beginEdit("Copy Layers from Project")

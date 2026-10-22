@@ -5,7 +5,7 @@ struct ImageLayer: Identifiable, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.id == rhs.id && lhs.name == rhs.name && lhs.isVisible == rhs.isVisible && lhs.transform == rhs.transform
             && lhs.asset?.image === rhs.asset?.image && lhs.parentID == rhs.parentID && lhs.isGroup == rhs.isGroup && lhs.opacity == rhs.opacity && lhs.blendMode == rhs.blendMode && lhs.mask == rhs.mask && lhs.maskSourceID == rhs.maskSourceID && lhs.adjustment == rhs.adjustment && lhs.shape == rhs.shape && lhs.text == rhs.text && lhs.effects == rhs.effects
-            && lhs.gifFrameMasks == rhs.gifFrameMasks && lhs.gifAnimation == rhs.gifAnimation
+            && lhs.gifAnimation == rhs.gifAnimation
     }
     let id: UUID
     var asset: ImportedImage?
@@ -20,7 +20,6 @@ struct ImageLayer: Identifiable, Equatable {
     var maskSourceID: UUID?
     var mask: LayerMask?
     /// Masks scoped to frames in an imported GIF. The frames remain part of this one layer.
-    var gifFrameMasks: [Int: LayerMask] = [:]
     var gifAnimation: GIFAnimation? = nil
     var adjustment: LayerAdjustment?
     /// Set on layers the Shape tool made; see `liveShape`.
@@ -44,7 +43,7 @@ struct ImageLayer: Identifiable, Equatable {
         self.name = name
     }
 
-    init(id: UUID, asset: ImportedImage?, name: String, isVisible: Bool, transform: LayerTransform, parentID: UUID? = nil, isGroup: Bool = false, opacity: Double = 1, blendMode: LayerBlendMode = .normal, mask: LayerMask? = nil, maskSourceID: UUID? = nil, adjustment: LayerAdjustment? = nil, shape: LayerShape? = nil, effects: LayerEffects? = nil, text: LayerText? = nil, gifFrameMasks: [Int: LayerMask] = [:], gifAnimation: GIFAnimation? = nil) {
+    init(id: UUID, asset: ImportedImage?, name: String, isVisible: Bool, transform: LayerTransform, parentID: UUID? = nil, isGroup: Bool = false, opacity: Double = 1, blendMode: LayerBlendMode = .normal, mask: LayerMask? = nil, maskSourceID: UUID? = nil, adjustment: LayerAdjustment? = nil, shape: LayerShape? = nil, effects: LayerEffects? = nil, text: LayerText? = nil, gifAnimation: GIFAnimation? = nil) {
         self.id = id
         self.asset = asset
         self.name = name
@@ -55,7 +54,6 @@ struct ImageLayer: Identifiable, Equatable {
         self.opacity = opacity
         self.blendMode = blendMode
         self.mask = mask
-        self.gifFrameMasks = gifFrameMasks
         self.gifAnimation = gifAnimation
         self.maskSourceID = maskSourceID
         self.adjustment = adjustment
@@ -130,16 +128,6 @@ final class EditorSession {
                                     sourceFrameIndex: animation.sourceFrameIndex(for: animation.selectedFrameIndex) ?? animation.selectedFrameIndex,
                                     displayedAsset: layer.asset)
     }
-    private struct GIFFrameMaskCacheKey: Equatable {
-        let frameIndex: Int
-        let frameMask: ObjectIdentifier
-        let layerMask: ObjectIdentifier?
-        let transform: LayerTransform
-        let layerMaskPlacement: LayerTransform?
-        let width: Int
-        let height: Int
-    }
-    @ObservationIgnored private var gifFrameMaskCache: [UUID: (key: GIFFrameMaskCacheKey, mask: LayerMask)] = [:]
     var gifTimelineLayerID: UUID? {
         guard let layer = activeLayer, layer.gifAnimation?.source.frames.isEmpty == false else { return nil }
         return layer.id
@@ -156,29 +144,9 @@ final class EditorSession {
     var gifTimelineSelectedFrameIndex: Int {
         activeLayer.flatMap { gifTimeline(for: $0)?.selectedFrameIndex } ?? 0
     }
-    var gifTimelineFrameMaskIndices: Set<Int> {
-        guard let id = gifTimelineLayerID else { return [] }
-        guard let masks = document?.layers.first(where: { $0.id == id })?.gifFrameMasks else { return [] }
-        return Set(masks.keys)
-    }
-    var gifTimelineEnabledFrameMaskIndices: Set<Int> {
-        guard let masks = activeLayer?.gifFrameMasks else { return [] }
-        return Set(masks.filter { $0.value.isEnabled }.keys)
-    }
     var gifTimelineCanEditFrames: Bool { canEditLayers && !gifTimelineIsLoadingFrame }
     /// Timing belongs to the layer and does not depend on the frame being decoded.
     var gifTimelineCanEditTiming: Bool { canEditLayers }
-    var gifTimelineHasSelectedFrameMask: Bool {
-        guard let id = gifTimelineLayerID else { return false }
-        return document?.layers.first(where: { $0.id == id })?.gifFrameMasks[gifTimelineSelectedFrameIndex] != nil
-    }
-    var gifTimelineSelectedFrameMaskIsEnabled: Bool {
-        guard let id = gifTimelineLayerID else { return false }
-        return document?.layers.first(where: { $0.id == id })?.gifFrameMasks[gifTimelineSelectedFrameIndex]?.isEnabled == true
-    }
-    var gifTimelineIsFrameMaskSelected: Bool { isGIFFrameMaskSelected }
-    var gifTimelineCanEditFrameMask: Bool { canEditMask && !gifTimelineIsLoadingFrame }
-    var gifTimelineCanToggleFrameMask: Bool { gifTimelineCanEditFrameMask && gifTimelineHasSelectedFrameMask }
     var gifTimelineIsPlaying: Bool {
         activeLayer.flatMap { gifTimeline(for: $0)?.isPlaying } ?? false
     }
@@ -204,13 +172,9 @@ final class EditorSession {
     }
 
     func displayedLayer(for layer: ImageLayer) -> ImageLayer {
-        guard let timeline = gifTimeline(for: layer), let asset = displayedAsset(for: layer) else { return layer }
+        guard gifTimeline(for: layer) != nil, let asset = displayedAsset(for: layer) else { return layer }
         var displayed = layer
         displayed.asset = asset
-        if let frameMask = layer.gifFrameMasks[timeline.selectedFrameIndex] {
-            displayed.mask = displayedFrameMask(frameMask, sharedMask: layer.mask, layer: layer,
-                                                asset: asset, frameIndex: timeline.selectedFrameIndex)
-        }
         return displayed
     }
 
@@ -233,26 +197,6 @@ final class EditorSession {
         return animation
     }
 
-    private func displayedFrameMask(_ frameMask: LayerMask, sharedMask: LayerMask?, layer: ImageLayer,
-                                    asset: ImportedImage, frameIndex: Int) -> LayerMask? {
-        guard frameMask.isEnabled else { return sharedMask }
-        guard sharedMask?.isEnabled == true else { return frameMask }
-        let width = asset.image.width, height = asset.image.height
-        let placement = displayedSharedMaskPlacement(for: layer)
-        let key = GIFFrameMaskCacheKey(frameIndex: frameIndex, frameMask: ObjectIdentifier(frameMask.asset.image),
-            layerMask: sharedMask.map { ObjectIdentifier($0.asset.image) }, transform: displayedTransform(for: layer),
-            layerMaskPlacement: placement, width: width, height: height)
-        if let cached = gifFrameMaskCache[layer.id], cached.key == key { return cached.mask }
-        guard let combined = LayerMask.combining(frameMask, with: sharedMask, layerTransform: displayedTransform(for: layer),
-                                                  sharedPlacement: placement, width: width, height: height) else {
-            return frameMask
-        }
-        gifFrameMaskCache[layer.id] = (key, combined)
-        if gifFrameMaskCache.count > 8, let evicted = gifFrameMaskCache.keys.first(where: { $0 != layer.id }) {
-            gifFrameMaskCache.removeValue(forKey: evicted)
-        }
-        return combined
-    }
     var canvasFocusRequest = 0
     var showsSampleRing = true
     var adjustmentOriginal: LayerAdjustment?
@@ -790,12 +734,9 @@ final class EditorSession {
         didSet {
             if !isMaskSelected {
                 viewsMaskAlone = false
-                isGIFFrameMaskSelected = false
             }
         }
     }
-    /// True when mask tools target the selected GIF frame's mask instead of the layer's shared mask.
-    var isGIFFrameMaskSelected = false
     /// Option-click on a mask thumbnail: the canvas shows the targeted mask by itself, in grayscale, so it can be
     /// painted with nothing else in the way, as in Photoshop. Targeting the layer's pixels, or another layer, ends it.
     var viewsMaskAlone = false
@@ -841,16 +782,9 @@ final class EditorSession {
         // A different canvas, or this one at another size (a rotation), is fitted to the window again.
         let changedCanvas = document?.id != snapshot.document?.id || document?.size != snapshot.document?.size
         let keepMaskTarget = isMaskSelected && activeLayerID == snapshot.activeLayerID
-        let keepFrameMaskTarget = isGIFFrameMaskSelected && activeLayerID == snapshot.activeLayerID
         document = snapshot.document
         activeLayerID = snapshot.activeLayerID
-        if keepFrameMaskTarget {
-            isGIFFrameMaskSelected = activeLayer?.gifFrameMasks[gifTimelineSelectedFrameIndex] != nil
-            isMaskSelected = isGIFFrameMaskSelected
-        } else {
-            isGIFFrameMaskSelected = false
-            isMaskSelected = keepMaskTarget && activeLayer?.mask != nil
-        }
+        isMaskSelected = keepMaskTarget && activeLayer?.mask != nil
         if changedCanvas, let document { viewport.fit(documentSize: document.size) }
     }
 
@@ -862,16 +796,10 @@ final class EditorSession {
     func endEdit() {
         history.end(document: document, selection: activeLayerID)
         gifTimelinesByLayerID = gifTimelinesByLayerID.filter { $0.value.source != nil }
-        let ids = Set(document?.layers.map(\.id) ?? [])
-        gifFrameMaskCache = gifFrameMaskCache.filter { ids.contains($0.key) }
     }
     var activeLayer: ImageLayer? { document?.layers.first { $0.id == activeLayerID } }
     func selectedMask(for layer: ImageLayer) -> LayerMask? {
-        if isGIFFrameMaskSelected, layer.id == activeLayerID,
-           let frameIndex = selectedGIFFrameIndex(for: layer.id) {
-            return layer.gifFrameMasks[frameIndex]
-        }
-        return layer.mask
+        layer.mask
     }
     /// How the Layers panel looks: grayed for what lasts (a dialog, a pending transform, crop or gradient, a long
     /// operation), but not for what only lasts while the mouse is down (a stroke, a move or Auto Select drag, moving
@@ -1167,7 +1095,6 @@ final class EditorSession {
 
     func clearGIFTimeline() {
         gifTimelinesByLayerID.removeAll()
-        gifFrameMaskCache.removeAll()
         isLoadingGIFFrame = false
         gifFrameSelectionRequestID = nil
     }
@@ -1202,7 +1129,6 @@ final class EditorSession {
               canEditLayers || isLoadingGIFFrame else { return }
         guard index != timeline.selectedFrameIndex || isLoadingGIFFrame else { return }
 
-        let wasEditingFrameMask = isGIFFrameMaskSelected && activeLayerID == layerID
         let requestID = UUID()
         gifFrameSelectionRequestID = requestID
         isLoadingGIFFrame = true
@@ -1227,10 +1153,6 @@ final class EditorSession {
             currentTimeline.sourceFrameIndex = animation.sourceFrameIndex(for: index) ?? index
             currentTimeline.displayedAsset = asset
             gifTimelinesByLayerID[layerID] = currentTimeline
-            if wasEditingFrameMask {
-                isGIFFrameMaskSelected = activeLayer?.gifFrameMasks[index] != nil
-                isMaskSelected = isGIFFrameMaskSelected
-            }
             refreshCanvasPreview?()
         } catch {
             guard gifFrameSelectionRequestID == requestID else { return }
