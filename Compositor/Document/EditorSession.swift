@@ -125,7 +125,6 @@ final class EditorSession {
     private(set) var gifPlaybackScope = GIFPlaybackScope.selected
     private var gifAllPlaybackSpeed = GIFPlaybackSpeed()
     @ObservationIgnored private var gifAllPlaybackPosition: TimeInterval = 0
-    let gifOnionSkin = GIFOnionSkinPreview()
     private func gifTimeline(for layer: ImageLayer) -> GIFLayerTimelineState? {
         guard let animation = layer.gifAnimation else { return nil }
         if let state = gifTimelinesByLayerID[layer.id],
@@ -1181,10 +1180,6 @@ final class EditorSession {
     }
 
     func clearGIFTimeline() {
-        gifOnionSkin.clear()
-        gifOnionSkin.isEnabled = false
-        gifOnionSkin.opacity = 0.25
-        gifOnionSkin.direction = .previous
         gifTimelinesByLayerID.removeAll()
         gifFrameMaskCache.removeAll()
         isLoadingGIFFrame = false
