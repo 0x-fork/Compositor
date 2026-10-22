@@ -113,7 +113,6 @@ private struct GIFLayerTimelineState {
     var sourceFrameIndex: Int
     var displayedAsset: ImportedImage?
     var isPlaying = false
-    var playbackSpeed = GIFPlaybackSpeed()
 }
 
 @Observable
@@ -122,9 +121,6 @@ final class EditorSession {
     var document: CanvasDocument?
     /// Runtime animation data keyed by the imported layer, so switching layers restores that GIF's timeline.
     private var gifTimelinesByLayerID: [UUID: GIFLayerTimelineState] = [:]
-    private(set) var gifPlaybackScope = GIFPlaybackScope.selected
-    private var gifAllPlaybackSpeed = GIFPlaybackSpeed()
-    @ObservationIgnored private var gifAllPlaybackPosition: TimeInterval = 0
     private func gifTimeline(for layer: ImageLayer) -> GIFLayerTimelineState? {
         guard let animation = layer.gifAnimation else { return nil }
         if let state = gifTimelinesByLayerID[layer.id],
@@ -186,16 +182,7 @@ final class EditorSession {
     var gifTimelineIsPlaying: Bool {
         activeLayer.flatMap { gifTimeline(for: $0)?.isPlaying } ?? false
     }
-    var gifTimelinePlaybackSpeed: GIFPlaybackSpeed {
-        if gifPlaybackScope == .all { return gifAllPlaybackSpeed }
-        return activeLayer.flatMap { gifTimeline(for: $0)?.playbackSpeed } ?? GIFPlaybackSpeed()
-    }
-    private var visibleGIFLayers: [ImageLayer] { document?.renderLayers.filter { $0.gifAnimation != nil } ?? [] }
-    var gifPlaybackLayerIDs: [UUID] { visibleGIFLayers.map(\.id) }
-    var gifTimelineCanPlay: Bool {
-        gifPlaybackScope == .all ? visibleGIFLayers.contains { ($0.gifAnimation?.frames.count ?? 0) > 1 }
-            : gifTimelineFrames.count > 1
-    }
+    var gifTimelineCanPlay: Bool { gifTimelineFrames.count > 1 }
     private var isLoadingGIFFrame = false {
         didSet {
             if !isLoadingGIFFrame {
@@ -209,7 +196,6 @@ final class EditorSession {
     /// Only timeline controls observe decoding, so they re-enable when it finishes without dimming shared controls.
     var gifTimelineIsLoadingFrame: Bool { isLoadingGIFFrame }
     @ObservationIgnored private var gifFrameSelectionRequestID: UUID?
-    @ObservationIgnored private var gifAllFrameSelectionRequest: (id: UUID, layerID: UUID)?
 
     /// Frame navigation stays in runtime state; pixel edits are immutable assets stored on the animation.
     func displayedAsset(for layer: ImageLayer) -> ImportedImage? {
@@ -1184,17 +1170,12 @@ final class EditorSession {
         gifFrameMaskCache.removeAll()
         isLoadingGIFFrame = false
         gifFrameSelectionRequestID = nil
-        gifAllFrameSelectionRequest = nil
-        gifPlaybackScope = .selected
-        gifAllPlaybackSpeed = GIFPlaybackSpeed()
-        gifAllPlaybackPosition = 0
     }
 
     func toggleGIFPlayback(for layerID: UUID) {
         guard activeLayerID == layerID,
               let layer = activeLayer,
               var timeline = gifTimeline(for: layer), gifTimelineCanPlay || timeline.isPlaying else { return }
-        if !timeline.isPlaying, gifPlaybackScope == .all { gifAllPlaybackPosition = 0 }
         timeline.isPlaying.toggle()
         gifTimelinesByLayerID[layerID] = timeline
     }
@@ -1202,35 +1183,6 @@ final class EditorSession {
     func stopGIFPlayback(for layerID: UUID) {
         guard var timeline = gifTimelinesByLayerID[layerID], timeline.isPlaying else { return }
         timeline.isPlaying = false
-        gifTimelinesByLayerID[layerID] = timeline
-        if let request = gifAllFrameSelectionRequest, request.layerID == layerID {
-            gifAllFrameSelectionRequest = nil
-            if gifFrameSelectionRequestID == request.id {
-                gifFrameSelectionRequestID = nil
-                isLoadingGIFFrame = false
-            }
-        }
-    }
-
-    func setGIFPlaybackScope(_ scope: GIFPlaybackScope, for layerID: UUID) {
-        guard activeLayerID == layerID, gifTimelineLayerID == layerID, scope != gifPlaybackScope else { return }
-        let wasPlaying = gifTimelineIsPlaying
-        pauseGIFForEditing(for: layerID)
-        gifPlaybackScope = scope
-        if wasPlaying { toggleGIFPlayback(for: layerID) }
-    }
-
-    func setGIFPlaybackSpeed(_ speed: GIFPlaybackSpeed, for layerID: UUID) {
-        guard activeLayerID == layerID else { return }
-        if gifPlaybackScope == .all {
-            guard gifTimelineCanPlay else { return }
-            gifAllPlaybackSpeed = speed
-            return
-        }
-        guard let layer = activeLayer,
-              (layer.gifAnimation?.frames.count ?? 0) > 1,
-              var timeline = gifTimeline(for: layer), timeline.playbackSpeed != speed else { return }
-        timeline.playbackSpeed = speed
         gifTimelinesByLayerID[layerID] = timeline
     }
 
@@ -1248,7 +1200,6 @@ final class EditorSession {
               animation.containsFrame(index),
               document?.layers.contains(where: { $0.id == layerID }) == true,
               canEditLayers || isLoadingGIFFrame else { return }
-        if gifPlaybackScope == .all, timeline.isPlaying { pauseGIFForEditing(for: layerID) }
         guard index != timeline.selectedFrameIndex || isLoadingGIFFrame else { return }
 
         let wasEditingFrameMask = isGIFFrameMaskSelected && activeLayerID == layerID
@@ -1288,86 +1239,6 @@ final class EditorSession {
     }
 
     /// The UI task owns playback's lifetime. Only per-layer runtime previews change, together after decoding.
-    func playAllGIFFrames(for layerID: UUID) async {
-        guard activeLayerID == layerID, gifPlaybackScope == .all, gifTimelineIsPlaying else { return }
-        let plan = GIFPlaybackPlan(layers: visibleGIFLayers)
-        guard plan.duration > 0 else { return }
-        let clock = ContinuousClock(), started = clock.now
-        let offset = gifAllPlaybackPosition, speed = gifAllPlaybackSpeed.multiplier
-        while !Task.isCancelled, activeLayerID == layerID, gifPlaybackScope == .all, gifTimelineIsPlaying {
-            let sampled = clock.now
-            let elapsed = offset + Self.gifSeconds(started.duration(to: sampled)) * speed
-            let time = elapsed.truncatingRemainder(dividingBy: plan.duration)
-            guard await showAllGIFFrames(plan, at: time, for: layerID) else {
-                if !Task.isCancelled, activeLayerID == layerID, gifPlaybackScope == .all { stopGIFPlayback(for: layerID) }
-                return
-            }
-            let delay = (plan.nextChange(after: time) - time) / speed - Self.gifSeconds(sampled.duration(to: clock.now))
-            do { if delay > 0 { try await Task.sleep(for: .seconds(delay)) } }
-            catch { return }
-        }
-    }
-
-    private static func gifSeconds(_ duration: Duration) -> TimeInterval {
-        Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
-    }
-
-    /// Publishes one shared clock position atomically, keeping the active layer and its edit target intact.
-    @discardableResult
-    func showAllGIFFrames(_ plan: GIFPlaybackPlan, at time: TimeInterval, for layerID: UUID) async -> Bool {
-        guard !Task.isCancelled, activeLayerID == layerID, gifPlaybackScope == .all, gifTimelineIsPlaying,
-              canEditLayers, time.isFinite, time >= 0,
-              visibleGIFLayers.map(\.id) == plan.tracks.map(\.layerID) else { return false }
-        let requestID = UUID()
-        gifFrameSelectionRequestID = requestID
-        gifAllFrameSelectionRequest = (requestID, layerID)
-        isLoadingGIFFrame = true
-        defer {
-            if gifAllFrameSelectionRequest?.id == requestID { gifAllFrameSelectionRequest = nil }
-            if gifFrameSelectionRequestID == requestID {
-                gifFrameSelectionRequestID = nil
-                isLoadingGIFFrame = false
-            }
-        }
-        var updates: [(layerID: UUID, index: Int, asset: ImportedImage)] = []
-        do {
-            for track in plan.tracks {
-                guard let layer = document?.layers.first(where: { $0.id == track.layerID }),
-                      layer.gifAnimation == track.animation else { return false }
-                let index = track.indices[track.position(at: time)]
-                if selectedGIFFrameIndex(for: track.layerID) == index { continue }
-                var source = track.animation
-                source.framePixels = [:]
-                let asset = try await ImageImporter.shared.decodeGIFFrame(source, index: index, name: track.name)
-                updates.append((track.layerID, index, asset))
-            }
-            guard !Task.isCancelled, gifFrameSelectionRequestID == requestID, activeLayerID == layerID,
-                  gifPlaybackScope == .all, gifTimelineIsPlaying, canEditLayers,
-                  visibleGIFLayers.map(\.id) == plan.tracks.map(\.layerID),
-                  plan.tracks.allSatisfy({ track in document?.layers.first(where: { $0.id == track.layerID })?.gifAnimation == track.animation })
-            else { return false }
-            let wasEditingMask = isGIFFrameMaskSelected
-            for update in updates {
-                guard let layer = document?.layers.first(where: { $0.id == update.layerID }), var timeline = gifTimeline(for: layer) else { continue }
-                timeline.selectedFrameIndex = update.index
-                timeline.sourceFrameIndex = layer.gifAnimation?.sourceFrameIndex(for: update.index) ?? update.index
-                timeline.displayedAsset = update.asset
-                gifTimelinesByLayerID[update.layerID] = timeline
-            }
-            if wasEditingMask {
-                isGIFFrameMaskSelected = activeLayer?.gifFrameMasks[gifTimelineSelectedFrameIndex] != nil
-                isMaskSelected = isGIFFrameMaskSelected
-            }
-            gifAllPlaybackPosition = min(time, plan.duration)
-            if !updates.isEmpty { refreshCanvasPreview?() }
-            return true
-        } catch {
-            guard !Task.isCancelled, !(error is CancellationError), gifFrameSelectionRequestID == requestID else { return false }
-            importError = "Couldn’t play animations: \(error.localizedDescription)"
-            return false
-        }
-    }
-
     /// Puts the sheet up before the file is read, so a big PSD doesn't leave the click unanswered.
     /// `finishPSDReading` fills it in, or takes it away when there is nothing to report.
     func beginPSDReading(title: String, confirmTitle: String) {
