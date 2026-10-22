@@ -5,7 +5,6 @@ import Sparkle
 @main
 struct CompositorApp: App {
     @NSApplicationDelegateAdaptor(CompositorApplicationDelegate.self) private var applicationDelegate
-    @AppStorage("toolRail.columns") private var toolRailColumns = 1
     @AppStorage("navigator.visible") private var showsNavigator = false
     private var session: EditorSession { applicationDelegate.session }
     var body: some Scene {
@@ -139,8 +138,6 @@ struct CompositorApp: App {
                             if let preview = session.previewZoom { preview(.zoomOut) } else { session.zoomKeyboard(by: -1) }
                         }
                             .configuredKeyboardShortcut("-").disabled(session.document == nil)
-                        Toggle("Tools in Two Columns", isOn: Binding(get: { toolRailColumns >= 2 },
-                                                                    set: { toolRailColumns = $0 ? 2 : 1 }))
                         Toggle("Navigator (300% and above)", isOn: $showsNavigator)
                         Toggle("Pixel Grid (800% and above)", isOn: Binding(get: { session.showsPixelGrid },
                                                                               set: { session.showsPixelGrid = $0 }))

@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// How the tool rail lays out its tools: one column as it always has, or two for a rail about half as tall.
+/// How the tool rail lays out its tools: one column as it always has, or two for a rail about half as tall when one
+/// doesn't fit.
 enum ToolRailLayout {
     static let buttonSize: CGFloat = 36
     static let columnSpacing: CGFloat = 8
@@ -18,23 +19,26 @@ enum ToolRailLayout {
     }
 }
 
-/// The tools down the left of the window, with the colour swatches under them. The double chevron at the top
-/// switches between one column and two, as Photoshop's does.
+/// The tools down the left of the window, with the color swatches under them: in one column while it fits the
+/// window's height, otherwise in two, which scroll if the window is shorter still.
 struct ToolRail: View {
     @Bindable var session: EditorSession
-    @Binding var columns: Int
 
     var body: some View {
-        // Scrolls when the window is too short for every tool, rather than pushing the bars above and below away.
-        IndicatorlessScrollView { ToolRailStack(session: session, columns: $columns) }
-            .frame(width: ToolRailLayout.width(columns: columns))
+        ViewThatFits(in: .vertical) {
+            ToolRailStack(session: session, columns: 1)
+            // Scrolls when the window is too short for every tool, rather than pushing the bars above and below away.
+            IndicatorlessScrollView { ToolRailStack(session: session, columns: 2) }
+                .frame(width: ToolRailLayout.width(columns: 2))
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 }
 
-/// The rail's contents: the column toggle, the tools in rows, and the colour swatches.
+/// The rail's contents: the tools in rows, and the color swatches.
 struct ToolRailStack: View {
     @Bindable var session: EditorSession
-    @Binding var columns: Int
+    let columns: Int
 
     private var tools: [NavigationTool] { NavigationTool.allCases.filter { $0 != .idle } }
 
@@ -42,15 +46,6 @@ struct ToolRailStack: View {
         let width = ToolRailLayout.width(columns: columns)
         let twoColumns = columns >= 2
         VStack(spacing: ToolRailLayout.rowSpacing) {
-            Button { columns = twoColumns ? 1 : 2 } label: {
-                Image(systemName: twoColumns ? "chevron.left.2" : "chevron.right.2")
-                    .font(.system(size: 9, weight: .semibold))
-                    .frame(width: width - 16, height: 12)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).foregroundStyle(.secondary)
-            .help(twoColumns ? "Show tools in one column" : "Show tools in two columns")
-            .accessibilityLabel(twoColumns ? "Show tools in one column" : "Show tools in two columns")
             ForEach(Array(ToolRailLayout.rows(tools, columns: columns).enumerated()), id: \.offset) { _, row in
                 HStack(spacing: ToolRailLayout.columnSpacing) {
                     ForEach(row, id: \.self) { toolButton($0) }
@@ -61,7 +56,7 @@ struct ToolRailStack: View {
             }
             ColorPaletteControls(session: session).padding(.top, 8)
         }
-        .padding(.top, 10).padding(.bottom, 12)
+        .padding(.top, 16).padding(.bottom, 12)
         .frame(width: width)
     }
 

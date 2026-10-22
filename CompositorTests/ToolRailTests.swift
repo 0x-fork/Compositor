@@ -27,27 +27,34 @@ struct ToolRailTests {
         let session = EditorSession()
         func size(_ columns: Int) -> CGSize {
             // The rail's contents: the scroll view around them would take any height it's offered.
-            NSHostingView(rootView: ToolRailStack(session: session, columns: .constant(columns))).fittingSize
+            NSHostingView(rootView: ToolRailStack(session: session, columns: columns)).fittingSize
         }
         #expect(size(1).width == 56)
         #expect(size(2).width == 92)
         #expect(size(2).height < size(1).height * 0.75)
     }
 
-    /// The rail scrolls its contents in an AppKit scroll view, which has to give them the rail's whole width: at a
-    /// fixed one-column width the second column was cut off.
-    @Test func scrollingRailGivesItsContentsItsWidth() throws {
-        for columns in [1, 2] {
-            let width = ToolRailLayout.width(columns: columns)
-            let host = NSHostingView(rootView: ToolRail(session: EditorSession(), columns: .constant(columns)).frame(height: 300))
-            host.frame = CGRect(x: 0, y: 0, width: width, height: 300)
-            host.layoutSubtreeIfNeeded()
-            func scrollView(in view: NSView) -> NSScrollView? {
-                view as? NSScrollView ?? view.subviews.lazy.compactMap(scrollView).first
-            }
-            let scroll = try #require(scrollView(in: host))
-            #expect(scroll.frame.width == width)
-            #expect(scroll.documentView?.frame.width == width)
+    /// One column while the window is tall enough for it; two, scrolling in an AppKit scroll view that has to give
+    /// its contents the rail's whole width, when it isn't.
+    @Test func railTakesTwoColumnsWhenOneDoesntFit() throws {
+        let session = EditorSession()
+        let tall = NSHostingView(rootView: ToolRailStack(session: session, columns: 1)).fittingSize.height
+        func scrollView(in view: NSView) -> NSScrollView? {
+            view as? NSScrollView ?? view.subviews.lazy.compactMap(scrollView).first
         }
+        func rail(height: CGFloat) -> NSHostingView<some View> {
+            let host = NSHostingView(rootView: ToolRail(session: session).frame(height: height))
+            host.frame = CGRect(x: 0, y: 0, width: 200, height: height)
+            host.layoutSubtreeIfNeeded()
+            return host
+        }
+        let roomy = rail(height: tall + 20)
+        #expect(roomy.fittingSize.width == 56)
+        #expect(scrollView(in: roomy) == nil, "one column needs no scrolling")
+        let short = rail(height: 300)
+        #expect(short.fittingSize.width == 92)
+        let scroll = try #require(scrollView(in: short))
+        #expect(scroll.frame.width == 92)
+        #expect(scroll.documentView?.frame.width == 92)
     }
 }

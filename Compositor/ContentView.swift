@@ -4,8 +4,6 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     /// The Layers panel's width, remembered across launches.
     @AppStorage("layersPanelWidth") private var layersPanelWidth = 252.0
-    /// One column of tools or two, remembered across launches.
-    @AppStorage("toolRail.columns") private var toolRailColumns = 1
     @AppStorage("navigator.visible") private var showsNavigator = false
     @Bindable var session: EditorSession
     var applicationDelegate: CompositorApplicationDelegate? = nil
@@ -84,7 +82,7 @@ struct ContentView: View {
             if !session.canvasOnly { toolHeaders }
             HStack(spacing: 0) {
                 if !session.canvasOnly {
-                    ToolRail(session: session, columns: $toolRailColumns)
+                    ToolRail(session: session)
                     Divider()
                 }
                 VStack(spacing: 0) {
