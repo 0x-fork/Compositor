@@ -114,7 +114,7 @@ struct GIFPreviewPlaybackTests {
     }
 
     @Test func canceledNavigationDoesNotAdvanceTheDisplayedFrame() async throws {
-        let url = try ImageImportTests().animatedGIFFixture()
+        let url = try GIFLayerTests().fixture()
         defer { try? FileManager.default.removeItem(at: url) }
         let session = EditorSession()
         await session.importImages([url])
