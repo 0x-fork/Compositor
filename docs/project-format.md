@@ -1,8 +1,8 @@
-# Compositor project format, versions 1–14, 27, and 28
+# Compositor project format, versions 1–16
 
 A `.comp` file is a macOS document package containing `manifest.json` and an `images/` directory of `<layer UUID>.png` assets.
 
-The manifest identifies `com.compositor.project`, version `28` for new saves (upstream versions `1`–`14` and local foundation version `27` remain readable), and the sRGB working space. It stores document UUID, pixel dimensions, active layer UUID, and layers in bottom-to-top order. Each layer stores its UUID, name, visibility, transform (origin, size, clockwise rotation, flips, sampling), and optional image filename. Blank layers have no image asset.
+The manifest identifies `com.compositor.project`, version `16` for new saves (versions `1`–`15` remain readable), and the sRGB working space. It stores document UUID, pixel dimensions, active layer UUID, and layers in bottom-to-top order. Each layer stores its UUID, name, visibility, transform (origin, size, clockwise rotation, flips, sampling), and optional image filename. Blank layers have no image asset.
 
 Embedded PNGs preserve source pixels and transparency; transforms remain separate. Projects survive moving or deleting imported source photos. Saving uses a coordinated atomic package replacement. Unsupported versions, invalid metadata, missing assets, unsafe paths, and oversized data are rejected before replacing the live document.
 
@@ -41,7 +41,7 @@ Version 11 lets those letters use different faces too: optional `fontRuns` in th
 Later fields are optional and not gated on the version, so older readers ignore them and keep the pixels or the linked mask as they were:
 
 - `maskPlacement` and `maskLinked`: an unlinked mask (`maskLinked` false; missing means linked) keeps its own transform in `maskPlacement`, a document-space rectangle like the layer transform, and no longer follows the layer when it moves. Both require a `maskFile`.
-- `shape`: a layer made with the Shape tool keeps its style (`kind`, `red`/`green`/`blue`, `cornerRadius` in document pixels, and for lines `lineWidth` plus `start` and `end` as fractions of the layer box) so it redraws cleanly when scaled. Its PNG is still an ordinary raster; once anything else changes those pixels the metadata is dropped.
+- `shape`: a layer made with the Shape tool keeps its style (`kind`, `red`/`green`/`blue`, `cornerRadius` in document pixels, and for lines `lineWidth` plus `start` and `end` as fractions of the layer box, and optional `lineStyle` and `lineCap` (version 15)) so it redraws cleanly when scaled. Its PNG is still an ordinary raster; once anything else changes those pixels the metadata is dropped.
 
 ### Editable text
 
@@ -57,37 +57,6 @@ Version 13 lets a layer's image file be OpenEXR, named `<layer UUID>.exr`: an HD
 
 Version 14 adds optional `smoothing` to a layer’s `shape` style. True draws rectangle corners with Figma-style 60% smoothing (the iOS squircle match); false or missing keeps circular corners. Radius stays in document pixels, and smoothing reduces when the corners have insufficient room. Drawing previews and scaled redraws use the same geometry. Files declaring versions 1–13 cannot enable smoothing, and older app builds reject v14.
 
-## GIF layers, version 28
+Version 15 lets a line carry `lineStyle` (`Solid`, `Dashed`, `Long Dash` or `Dotted`, with dashes measured in multiples of the line's width) and `lineCap` (`Square` or `Round`, applied to the line's ends and to every dash and dot) in its `shape` style. Missing means solid with round caps, as every line was before version 15 (new lines start square-capped); other shape kinds cannot carry them. Files declaring 1–14 cannot contain them, and older app builds reject v15 rather than failing to read the unknown values.
 
-Version 28 adds an optional `gif` object to ordinary image layers. Groups, adjustments, editable text, and editable shapes cannot carry it. The existing transform, opacity, effects, clipping, and shared mask still apply to the whole layer.
-
-```json
-"gif": {
-  "sourceFile": "6F1D3C2A-0B7E-4E8A-9C4D-2A1B3C4D5E6F.gif",
-  "selectedFrameIndex": 1,
-  "frameMasks": [
-    {
-      "index": 1,
-      "maskFile": "6F1D3C2A-0B7E-4E8A-9C4D-2A1B3C4D5E6F.frame-1.mask.png",
-      "isEnabled": false
-    }
-  ]
-}
-```
-
-- `sourceFile` is required: `<layer UUID>.gif` under `images/`, containing the immutable original GIF and its source timing. `selectedFrameIndex` is required and identifies a surviving frame. The ordinary `imageFile` remains a PNG of that selected frame's raw pixels, including edits, without masks baked in. Opening restores it with playback paused and editing on pixels.
-- `frameMasks` defaults to `[]`. Each record has a unique surviving `index` and `maskFile: "<layer UUID>.frame-<index>.mask.png"`. Masks use ordinary 8-bit grayscale coverage. `isEnabled` and `isLinked` default to true; optional `placement` defaults to nil and otherwise uses a valid layer transform. Disabled masks remain embedded. Enabled frame and shared masks multiply in rendering and export.
-- `geometry` defaults to nil (original source dimensions). It stores Image Size output `width`/`height`, affine coefficients `a`, `b`, `c`, `d`, `tx`, `ty`, and optional `sampling` (default `High quality`; also `Smooth` or `Nearest`). The map runs from normalized source to normalized output coordinates. Dimensions meet raster limits; coefficients are finite within ±1,000,000 with absolute determinant greater than 10⁻¹⁵. Selected and edited PNGs must match these output dimensions, or source dimensions without geometry.
-- `framePixels` defaults to `[]`. Records have unique surviving `index` values and `imageFile: "<layer UUID>.frame-<index>.png"`, containing full edited raw frames without masks. Other frames decode from the source through any geometry. Selected and edited PNGs count toward the document raster budget; masks use its separate mask budget. Thumbnails are regenerated rather than stored.
-- `deletedFrameIndices` defaults to `[]` and contains unique original source indices. `frameOrder` defaults to nil (surviving originals in source order); explicit entries are `{ "index": 4, "sourceIndex": 1 }` in playback order. Original identities equal source indices; inserted identities start at source frame count and remain below 8,192. Identities are unique, every undeleted original must appear, and 1–4,096 frames must remain. Deleting an inserted frame removes its order entry. Selection, pixels, masks, and delay overrides refer to surviving identities, not strip positions.
-- `timing` defaults to imported delays. `mode` is `Frame delay` or `Same for all`; `uniformDelay` is in seconds; `frameDelays` contains unique `{ "index": 4, "duration": 0.16 }` overrides. Delays must be finite and 0.02–655.35 seconds. Missing overrides use source delays; uniform mode retains but ignores overrides. Model defaults are per-frame mode and 0.1 seconds; newly imported layers suggest the most common source delay, or the mean if frequencies tie.
-
-Each source accepts at most 4,096 frames and 512 MiB. Across layers, including duplicates, thumbnails share about 16 megapixels and source bytes are bounded by four times `DocumentLimits.documentPixelBudget`. Ordinary side, surface, raster, mask, and encoded-asset limits also apply. Loading validates source type, dimensions, identities, filenames, and assets before replacing the document; atomic saving preserves the previous package on failure. Full-size source frames decode on demand.
-
-Undo history, batch selection, mask edit targeting, onion skin, playback scope/speed, and export overrides remain session-only. See [GIF workflow](gif-support-plan.md) for editing, timing, and export behavior.
-
-## Submission format compatibility
-
-New saves use provisional version 28, reading upstream versions 1–14 and local foundation version 27. Version 27 omits frame order, deletions, and timing, which default as above; new fields require 28 so earlier readers reject them rather than lose edits. Coordinate any renumbering across writer, reader gates, documentation, and fixtures.
-
-Private-fork versions 15–26 and GIF metadata in versions 1–14 are rejected because the fork's animation schemas overlap upstream's still-image schemas. Keep those packages unchanged and use the complete private fork to open them; do not renumber manifests to bypass validation.
+Version 16 adds three adjustment kinds from the Filter menu: `Progressive Blur`, `Bloom / Glow` and `RGB Split`. Their settings are in the adjustment's optional `filterLayerSettings`: `progressiveFrom` and `progressiveTo` (0–250 document pixels), `progressiveStart` and `progressiveEnd` (document points), `progressiveRadial`, `progressiveInverted`; `bloomAmount` (0–100) and `bloomRadius` (1–150); `rgbSplitDistance` (0–200), `rgbSplitBlur` (0–400), `rgbSplitAngle` (−180 to 180 degrees), `rgbSplitRadial`, `rgbSplitCenter` (a document point) and `rgbSplitReach` (document pixels from the center at which Radial's full distance applies). Files declaring 1–15 cannot contain these kinds or `filterLayerSettings`, and older app builds reject v16.

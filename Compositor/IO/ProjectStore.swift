@@ -8,7 +8,7 @@ extension UTType {
     nonisolated static let photoshopImage = UTType(importedAs: "com.adobe.photoshop-image")
     nonisolated static let photoshopLargeImage = UTType(importedAs: "com.adobe.photoshop-large-image")
     static let importableImages: [UTType] = [.jpeg, .png, .gif, .heic, .heif, .tiff, .webP, .openEXR, .radianceHDR, .photoshopImage,
-                                             .photoshopLargeImage, .rawImage, .svg]
+                                             .photoshopLargeImage, .rawImage, .svg, .pdf]
     /// OpenEXR, the format renders (Blender's among them) keep light brighter than white in.
     static let openEXR = UTType("com.ilm.openexr-image") ?? .image
     /// Radiance HDR (.hdr), the usual format for HDRI panoramas.
@@ -17,7 +17,7 @@ extension UTType {
 
 nonisolated struct ProjectManifest: Codable, Sendable {
     /// The format version new saves write.
-    static let current = 28
+    static let current = 17
     /// Every version `load` accepts. The package-header check, the manifest check and the error
     /// message all read this, so they cannot drift apart when `current` is bumped.
     static let upstreamVersions = 1...14
@@ -391,15 +391,15 @@ actor ProjectStore {
                 guard manifest.version >= 14 else { throw ProjectError.invalid }
             }
             if let gif = layer.gif {
-                let identityLimit = manifest.version >= 28 ? GIFTimelineLimits.frameIdentityLimit : GIFTimelineLimits.maxFrames
-                guard manifest.version >= 27, layer.imageFile != nil, layer.isGroup != true,
+                let identityLimit = manifest.version >= 17 ? GIFTimelineLimits.frameIdentityLimit : GIFTimelineLimits.maxFrames
+                guard manifest.version >= 17, layer.imageFile != nil, layer.isGroup != true,
                       layer.adjustment == nil, layer.text == nil, layer.shape == nil,
                       gif.sourceFile == "\(layer.id.uuidString).gif",
                       (0..<identityLimit).contains(gif.selectedFrameIndex),
                       gif.geometry.map(\.isValid) ?? true,
                       gif.frameMasks.count <= GIFTimelineLimits.maxFrames else { throw ProjectError.invalid }
                 var indices = Set<Int>()
-                guard gif.deletedFrameIndices.isEmpty || manifest.version >= 28,
+                guard gif.deletedFrameIndices.isEmpty || manifest.version >= 17,
                       gif.deletedFrameIndices.count <= GIFTimelineLimits.maxFrames else { throw ProjectError.invalid }
                 for index in gif.deletedFrameIndices {
                     guard (0..<GIFTimelineLimits.maxFrames).contains(index), indices.insert(index).inserted else {
@@ -408,7 +408,7 @@ actor ProjectStore {
                 }
                 indices.removeAll()
                 if let order = gif.frameOrder {
-                    guard manifest.version >= 28, !order.isEmpty, order.count <= GIFTimelineLimits.maxFrames else {
+                    guard manifest.version >= 17, !order.isEmpty, order.count <= GIFTimelineLimits.maxFrames else {
                         throw ProjectError.invalid
                     }
                     for frame in order {
@@ -418,7 +418,7 @@ actor ProjectStore {
                     indices.removeAll()
                 }
                 if let timing = gif.timing {
-                    guard manifest.version >= 28, timing.isValid else { throw ProjectError.invalid }
+                    guard manifest.version >= 17, timing.isValid else { throw ProjectError.invalid }
                 }
                 for mask in gif.frameMasks {
                     guard (0..<identityLimit).contains(mask.index), indices.insert(mask.index).inserted,
@@ -432,6 +432,10 @@ actor ProjectStore {
                           pixels.imageFile == "\(layer.id.uuidString).frame-\(pixels.index).png" else { throw ProjectError.invalid }
                 }
             }
+            // A line's dashes and caps arrived in version 15, and only lines have them.
+            if let shape = layer.shape, shape.lineStyle != nil || shape.lineCap != nil {
+                guard manifest.version >= 15, shape.kind == .line else { throw ProjectError.invalid }
+            }
             if let text = layer.text {
                 // Per-letter colors arrived in version 10, per-letter faces in version 11.
                 guard text.isValid,
@@ -443,6 +447,10 @@ actor ProjectStore {
                 guard manifest.version >= 7, layer.isGroup != true, layer.imageFile == nil, adjustment.isValid else { throw ProjectError.invalid }
                 if adjustment.kind == .gaussianBlur || adjustment.kind == .motionBlur || adjustment.kind == .addNoise {
                     guard manifest.version >= 9 else { throw ProjectError.invalid }
+                }
+                // Progressive Blur, Bloom / Glow and RGB Split layers arrived in version 16.
+                if [.progressiveBlur, .bloomGlow, .rgbSplit].contains(adjustment.kind) || adjustment.filterLayerSettings != nil {
+                    guard manifest.version >= 16 else { throw ProjectError.invalid }
                 }
             }
             // Layer masks arrived in version 4, folder masks in version 6.
