@@ -10,20 +10,11 @@ struct LayersPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Layers").font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Text(session.isFilteringLayers
-                     ? "\(session.filteredLayerRows.count) of \(session.document?.layers.count ?? 0)"
-                     : "\(session.document?.layers.count ?? 0)").font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
-                    .accessibilityIdentifier("layerCount")
-            }.padding(18)
+            LayersHeader(session: session)
             Divider()
             LayerAppearanceControls(session: session, layerID: session.activeLayerID).id(session.activeLayerID)
             Divider()
             if let layers = session.document?.layers, !layers.isEmpty {
-                LayerSearchControls(session: session)
-                Divider()
                 if session.isFilteringLayers, session.filteredLayerRows.isEmpty {
                     LayersUnavailableView("No layers match the filter.", systemImage: "line.3.horizontal.decrease.circle.fill") {
                         Button("Clear All") {
@@ -37,7 +28,7 @@ struct LayersPanel: View {
                 }
             } else {
                 LayersUnavailableView("No layers yet", systemImage: "square.3.layers.3d") {
-                    Text(session.document == nil ? "Create a canvas or import an image." : "Import an image or add a blank layer.")
+                    Text(session.document == nil ? "Create a canvas or import a file." : "Import a file or add a blank layer.")
                 }
             }
             Divider()
@@ -50,7 +41,12 @@ struct LayersPanel: View {
                     .help("Group selected layers (⌘G)").accessibilityLabel("New folder").disabled(!session.layersLookEditable)
                 LayerMaskMenu(session: session)
                 Menu {
-                    ForEach(AdjustmentKind.allCases, id: \.self) { kind in
+                    // The Image menu's adjustments, then the Filter menu's filters.
+                    ForEach(AdjustmentKind.imageAdjustments, id: \.self) { kind in
+                        Button(kind.rawValue) { session.addAdjustment(kind) }
+                    }
+                    Divider()
+                    ForEach(AdjustmentKind.filters, id: \.self) { kind in
                         Button(kind.rawValue) { session.addAdjustment(kind) }
                     }
                 } label: { Image(systemName: "circle.lefthalf.filled").footerHitArea() }

@@ -3,20 +3,19 @@
   <channel>
     <title>Compositor</title>
     <item>
-      <title>Version 1.4.10</title>
-      <pubDate>Sun, 11 Oct 2026 18:20:35 +0000</pubDate>
-      <sparkle:version>45</sparkle:version>
-      <sparkle:shortVersionString>1.4.10</sparkle:shortVersionString>
+      <title>Version 1.5.5</title>
+      <pubDate>Wed, 21 Oct 2026 22:09:13 +0000</pubDate>
+      <sparkle:version>51</sparkle:version>
+      <sparkle:shortVersionString>1.5.5</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.4.10</link>
-      <changes><![CDATA[Spot Healing and Content-Aware Fill rebuilt: edges and texture carry on through what's removed
-Import a folder of images as layers, from Import Image or by dropping it on the canvas, a tab or the Dock
-Gaussian Blur: Preserve Transparency, and solid edges for a picture filling the canvas
-RAW develop adds Noise Reduction, Lens Correction and Highlight Recovery
-Opens HEIF photos from Canon, Sony and Fuji cameras (.hif, .heif)
-The Layers panel keeps everything inside it at its narrowest
-A new app icon]]></changes>
-      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.4.10/Compositor.dmg" sparkle:edSignature="PeNk0AaelF3JSqEiEwB1SSHd96aOpeWkilnboVABITjT+MjoiwDuFCL6B/1HezNfFNfBRiF58OicrAQO08VdCw==" length="8052868" type="application/octet-stream"/>
+      <link>https://github.com/robbietilton/Compositor/releases/tag/v1.5.5</link>
+      <changes><![CDATA[Filter › RGB Split: rainbow dispersion, linear or radial, with blur streaks.
+Progressive Blur, Bloom / Glow and RGB Split as adjustment layers.
+Export As › Channel Pack packs layers into a PNG's red, green, blue and alpha, for game textures.
+Photoshop artboards each open in a tab of their own.
+Copy and paste work in file names when saving, and shortcuts work on non-Latin keyboards.
+Image Size keeps the zoom, and small images open at 100%.]]></changes>
+      <enclosure url="https://github.com/robbietilton/Compositor/releases/download/v1.5.5/Compositor.dmg" sparkle:edSignature="TGExBpK96Swny/lx2IICL1Kq8WyJFc8z48JlLL9CEklE79plJVxcYBAvhmrNu3Ermm2i2ddgmHSdCtfV8yjaAQ==" length="8330075" type="application/octet-stream"/>
     </item>
   </channel>
 </rss>

@@ -79,35 +79,38 @@ extension EditorSession {
     }
 }
 
-/// The Layers panel's search by name, and the funnel that opens the type-filter panel. The funnel
-/// reads as pressed while a filter is on. Its binding ignores the value the toggle passes (it flips
-/// its own on state, which is the filter's): clicking always opens or closes the panel.
-struct LayerSearchControls: View {
+/// The Layers panel's title row: "Layers", with a magnifier that turns the title into a search field for layer names,
+/// and a funnel that opens the type filter (blue while one is on). The search stays open while it has text; Escape
+/// or clicking away with nothing typed puts the title back.
+struct LayersHeader: View {
     @Bindable var session: EditorSession
+    @State private var searching = false
     /// Whether the funnel's type-filter panel is open.
     @State private var isPresentingFilter = false
 
     var body: some View {
-        HStack {
-            LayerSearchField(text: $session.layerSearchText)
-                .help("Type a layer name.")
-            Toggle(isOn: Binding(
-                get: { !session.layerTypeFilter.isEmpty },
-                set: { _ in isPresentingFilter.toggle() }
-            )) {
+        HStack(spacing: 10) {
+            if searching || !session.layerSearchText.isEmpty {
+                LayerSearchField(text: $session.layerSearchText) { searching = false }
+            } else {
+                Text("Layers").font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Button { searching = true } label: { Image(systemName: "magnifyingglass") }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help("Search layers by name").accessibilityLabel("Search layers")
+                    .accessibilityIdentifier("layerSearchButton")
+            }
+            Button { isPresentingFilter.toggle() } label: {
                 Image(systemName: "line.3.horizontal.decrease")
-                    .padding(4)
+                    .foregroundStyle(session.layerTypeFilter.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.accentColor))
             }
-            .toggleStyle(.button)
-            .buttonBorderShape(.circle)
-            .labelStyle(.iconOnly)
-            .accessibilityLabel("Filter the layer list.")
-            .help("Filter the layer list.")
-            .popover(isPresented: $isPresentingFilter) {
-                typeFilterPopover
-            }
+            .buttonStyle(.plain)
+            .help("Show only some kinds of layer").accessibilityLabel("Filter the layer list")
+            .popover(isPresented: $isPresentingFilter) { typeFilterPopover }
         }
-        .padding(6)
+        .frame(height: 22)
+        .padding(.horizontal, 18).padding(.vertical, 14)
+        .disabled(session.document?.layers.isEmpty != false)
     }
 
     /// The funnel's contents. All Layers and Clear All concern the type toggles alone — the search
@@ -143,16 +146,19 @@ struct LayerSearchControls: View {
     }
 }
 
-/// The Layers panel's search field: AppKit's search field, which brings its own cancel and clear
-/// buttons and clears on Escape, so SwiftUI only supplies the text binding.
+/// The Layers panel's search field: AppKit's search field, which brings its own clear button and clears on Escape.
+/// It takes the keyboard when it appears; `end` runs once it's left empty, by Escape or a click elsewhere.
 private struct LayerSearchField: NSViewRepresentable {
     @Binding var text: String
+    var end: () -> Void
 
     func makeNSView(context: Context) -> NSSearchField {
         let field = NSSearchField()
-        field.placeholderString = "Search"
+        field.placeholderString = "Search Layers"
+        field.controlSize = .small
         field.delegate = context.coordinator
         field.setAccessibilityIdentifier("layerSearch")
+        DispatchQueue.main.async { field.window?.makeFirstResponder(field) }
         return field
     }
 
@@ -161,15 +167,28 @@ private struct LayerSearchField: NSViewRepresentable {
         if field.stringValue != text { field.stringValue = text }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text, end: end) }
 
     final class Coordinator: NSObject, NSSearchFieldDelegate {
         let text: Binding<String>
-        init(text: Binding<String>) { self.text = text }
+        let end: () -> Void
+        init(text: Binding<String>, end: @escaping () -> Void) { self.text = text; self.end = end }
 
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSSearchField else { return }
             text.wrappedValue = field.stringValue
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            if text.wrappedValue.isEmpty { end() }
+        }
+
+        /// Escape clears the search; on an empty one it closes it and gives the canvas back the keyboard.
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.cancelOperation(_:)), text.wrappedValue.isEmpty else { return false }
+            control.window?.makeFirstResponder(nil)
+            end()
+            return true
         }
     }
 }
