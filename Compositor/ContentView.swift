@@ -137,6 +137,7 @@ struct ContentView: View {
                                         await session.selectGIFTimelineFrame(index)
                                     },
                                     onTogglePlayback: { session.toggleGIFPlayback(for: gifLayerID) },
+                                    onStopPlayback: { session.stopGIFPlayback(for: gifLayerID) },
                                     onChangeTiming: { session.setGIFFrameTiming($0, for: gifLayerID) },
                                     onDuplicateFrame: { await session.duplicateGIFFrame(at: $0, for: gifLayerID) },
                                     onDeleteFrame: { await session.deleteGIFFrames(at: [$0], for: gifLayerID) })

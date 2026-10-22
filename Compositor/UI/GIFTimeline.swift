@@ -12,6 +12,7 @@ struct GIFTimeline: View {
     let canEditTiming: Bool
     let onSelectFrame: (Int) async -> Void
     let onTogglePlayback: () -> Void
+    let onStopPlayback: () -> Void
     let onChangeTiming: (GIFFrameTiming) -> Void
     let onDuplicateFrame: (Int) async -> Void
     let onDeleteFrame: (Int) async -> Void
@@ -54,6 +55,27 @@ struct GIFTimeline: View {
                 }
             }
         }
+        // While playing, each frame shows for its delay and then the next, round and round.
+        .task(id: Playback(isPlaying: isPlaying, frames: frames.map(\.index), timing: timing)) { await play() }
+        .onChange(of: canPlay) { if !canPlay, isPlaying { onStopPlayback() } }
+        .onDisappear { onStopPlayback() }
+    }
+
+    private struct Playback: Equatable {
+        let isPlaying: Bool
+        let frames: [Int]
+        let timing: GIFFrameTiming
+    }
+
+    private func play() async {
+        guard isPlaying, frames.count > 1 else { return }
+        var position = frames.firstIndex { $0.index == selectedFrameIndex } ?? 0
+        while !Task.isCancelled {
+            let delay = max(GIFTimelineLimits.minimumFrameDuration, timing.delay(for: frames[position]))
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            position = (position + 1) % frames.count
+            await onSelectFrame(frames[position].index)
+        }
     }
 
     private func thumbnail(_ frame: GIFTimelineFrame, number: Int) -> some View {
@@ -68,7 +90,10 @@ struct GIFTimeline: View {
             Text("\(number)").font(.caption2.monospacedDigit()).foregroundStyle(selected ? .primary : .secondary)
         }
         .contentShape(Rectangle())
-        .onTapGesture { Task { await onSelectFrame(frame.index) } }
+        .onTapGesture {
+            if isPlaying { onStopPlayback() }
+            Task { await onSelectFrame(frame.index) }
+        }
         .contextMenu {
             Button("Duplicate Frame") { Task { await onDuplicateFrame(frame.index) } }.disabled(!canEditFrames)
             Button("Delete Frame") { Task { await onDeleteFrame(frame.index) } }.disabled(!canEditFrames || frames.count < 2)
