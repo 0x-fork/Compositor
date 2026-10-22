@@ -130,8 +130,9 @@ struct LayersHeader: View {
             .help("Show only some kinds of layer").accessibilityLabel("Filter the layer list")
             .popover(isPresented: $isPresentingFilter) { typeFilterPopover }
         }
-        .frame(height: 26)
-        .padding(.leading, 18).padding(.trailing, 10).padding(.vertical, 12)
+        // As tall as the search field, so the row keeps its height when the title turns into one.
+        .frame(height: 30)
+        .padding(.leading, 18).padding(.trailing, 10).padding(.vertical, 10)
         .disabled(session.document?.layers.isEmpty != false)
     }
 
@@ -179,12 +180,14 @@ private struct LayerSearchField: View {
 
     var body: some View {
         let box = RoundedRectangle(cornerRadius: 6, style: .continuous)
+        // The font list's measurements: 30 points tall, a 13-point magnifier in a 16-point square, 13-point text.
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.system(size: 11))
+            Image(systemName: "magnifyingglass").font(.system(size: 13)).foregroundStyle(.secondary)
+                .frame(width: 16, height: 16)
             PlainSearchText(text: $text, end: end)
         }
-        .padding(.horizontal, 7)
-        .frame(height: 24)
+        .padding(.leading, 8).padding(.trailing, 6)
+        .frame(height: 30)
         .overlay { box.strokeBorder(Color.accentColor, lineWidth: 1) }
     }
 }
@@ -200,7 +203,7 @@ private struct PlainSearchText: NSViewRepresentable {
         field.isBezeled = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        field.font = .systemFont(ofSize: NSFont.systemFontSize)
         field.placeholderString = "Search Layers"
         field.cell?.usesSingleLineMode = true
         field.cell?.isScrollable = true
