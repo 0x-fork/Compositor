@@ -4,25 +4,21 @@ import ImageIO
 import UniformTypeIdentifiers
 
 nonisolated struct GIFExportOptions: Equatable, Sendable {
-    /// Nil animates all visible frame timelines on a shared clock.
-    var layerID: UUID? = nil
     var loopsForever = true
     var keepsTransparency = true
     var red: CGFloat = 1
     var green: CGFloat = 1
     var blue: CGFloat = 1
-    var timing = GIFExportTiming()
 }
 
 nonisolated enum GIFExportError: LocalizedError {
-    case tooLarge, invalidTimeline, invalidTiming
+    case tooLarge, invalidTimeline
 
     var errorDescription: String? {
         switch self {
         case .tooLarge:
             "Animation export supports up to \(GIFTimelineLimits.maxFrames.formatted()) frames, \(GIFExporter.pixelBudget / 1_000_000) megapixels across all exported frames, and 512 MiB of encoded data. Reduce the export size or frame count."
         case .invalidTimeline: "The selected animation timeline is missing or invalid."
-        case .invalidTiming: "Frame delays must be 20–655,350 ms, with export speed between 0.25× and 4×. Use a shorter delay or faster speed if an exported delay exceeds 655,350 ms."
         }
     }
 }

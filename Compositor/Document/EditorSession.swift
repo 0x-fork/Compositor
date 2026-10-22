@@ -139,7 +139,6 @@ final class EditorSession {
                              duration: frame.duration)
         }
     }
-    var gifTimelineSourceFrames: [GIFTimelineFrame] { activeLayer?.gifAnimation?.sourceFrames ?? [] }
     var gifTimelineTiming: GIFFrameTiming { activeLayer?.gifAnimation?.timing ?? GIFFrameTiming() }
     var gifTimelineSelectedFrameIndex: Int {
         activeLayer.flatMap { gifTimeline(for: $0)?.selectedFrameIndex } ?? 0

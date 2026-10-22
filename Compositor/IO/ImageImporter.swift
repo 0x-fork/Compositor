@@ -193,10 +193,6 @@ actor ImageImporter {
         }
     }
 
-    func isFrameAnimation(_ url: URL) -> Bool {
-        UTType(filenameExtension: url.pathExtension)?.conforms(to: .gif) == true
-    }
-
     func importGIF(_ url: URL, remainingPixels: Int = DocumentLimits.documentPixelBudget) throws -> (asset: ImportedImage, animation: GIFAnimation) {
         let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         guard size > 0, size <= GIFSource.byteLimit else { throw ImageImportError.tooLarge }

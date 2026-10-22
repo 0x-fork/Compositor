@@ -27,17 +27,7 @@ nonisolated struct GIFExportSchedule {
     init(_ snapshot: ProjectSnapshot, options: GIFExportOptions) throws {
         let scale = 100
         let minimumTicks = Int((GIFTimelineLimits.minimumFrameDuration * Double(scale)).rounded())
-        let layers: [ProjectLayerRecord]
-        if let id = options.layerID {
-            guard let layer = snapshot.manifest.layers.first(where: { $0.id == id }) else {
-                throw GIFExportError.invalidTimeline
-            }
-            layers = [layer]
-        } else {
-            layers = snapshot.gifExportLayers
-        }
-        // All uses each layer's saved timing; individual overrides belong to the chosen timeline only.
-        let timing = options.layerID == nil ? GIFExportTiming(speedMultiplier: options.timing.speedMultiplier) : options.timing
+        let layers = snapshot.gifExportLayers
         var tracks: [Track] = []
         var minimum = false
         for layer in layers {
@@ -46,8 +36,12 @@ nonisolated struct GIFExportSchedule {
                   !animation.frames.isEmpty else { throw GIFExportError.invalidTimeline }
             let sourceFrames = animation.sourceFrames
             guard sourceFrames.count <= GIFTimelineLimits.maxFrames else { throw GIFExportError.tooLarge }
-            let durations = try timing.durations(for: sourceFrames, inheriting: animation.timing)
-            minimum = minimum || timing.usesMinimumDelay(for: sourceFrames, inheriting: animation.timing)
+            // Each frame for its layer's delay, which GIF stores in hundredths of a second.
+            let durations = sourceFrames.map { frame -> TimeInterval in
+                let delay = animation.timing.delay(for: frame)
+                let kept = min(GIFFrameTiming.delayRange.upperBound, max(GIFFrameTiming.delayRange.lowerBound, delay.isFinite ? delay : 0.1))
+                return (kept * 100).rounded() / 100
+            }
             var end = 0, starts: [Int] = []
             for duration in durations {
                 starts.append(end)
@@ -57,7 +51,7 @@ nonisolated struct GIFExportSchedule {
         }
         self.tracks = tracks
         guard let end = tracks.map(\.end).max() else {
-            let duration = try options.timing.durations(for: [])[0]
+            let duration = GIFTimelineLimits.defaultFrameDuration
             frames = [Frame(start: 0, sample: 0, ticks: Int((duration * Double(scale)).rounded()), ticksPerSecond: scale)]
             usesMinimumDelay = false
             return
