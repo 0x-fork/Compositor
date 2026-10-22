@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// The Layers panel's type filter: the kinds of layer the list narrows to while their toggles are on.
+/// The Layers panel's type filter: the kinds of layer the list narrows to while their toggles are on, and Selected,
+/// the layers selected right now.
 enum LayerType: String, CaseIterable {
-    case image, shape, text, folder, adjustment
+    case image, shape, text, folder, adjustment, selected
 }
 
 extension LayerType {
@@ -13,6 +14,7 @@ extension LayerType {
         case .text: "Text"
         case .folder: "Folders"
         case .adjustment: "Adjustments"
+        case .selected: "Selected"
         }
     }
     var systemImageName: String {
@@ -22,6 +24,7 @@ extension LayerType {
         case .text: "character"
         case .folder: "folder"
         case .adjustment: "circle.righthalf.filled"
+        case .selected: "checkmark.circle"
         }
     }
     /// VoiceOver's description of the type's toggle.
@@ -32,6 +35,7 @@ extension LayerType {
         case .text: "Filter to text layers"
         case .folder: "Filter to folder layers"
         case .adjustment: "Filter to adjustment layers"
+        case .selected: "Filter to the selected layers"
         }
     }
     /// The toggle's stable identifier, cased to match "layerFilterAll".
@@ -63,10 +67,24 @@ extension EditorSession {
         guard isFilteringLayers else { return entries }
         let query = layerSearchText.trimmingCharacters(in: .whitespaces).lowercased()
         let byID = Dictionary(uniqueKeysWithValues: (document?.layers ?? []).map { ($0.id, $0) })
+        func matches(_ layer: ImageLayer) -> Bool {
+            (query.isEmpty || layer.name.lowercased().contains(query))
+                && (layerTypeFilter.isEmpty || layerTypeFilter.contains(layer.layerType)
+                    || (layerTypeFilter.contains(.selected) && selectedLayerIDs.contains(layer.id)))
+        }
+        // A folder that matches brings everything inside it along, so its contents can be seen and worked on.
+        let matched = Set((document?.layers ?? []).filter(matches).map(\.id))
+        func insideMatchedFolder(_ layer: ImageLayer) -> Bool {
+            var parent = layer.parentID
+            while let id = parent {
+                if matched.contains(id) { return true }
+                parent = byID[id]?.parentID
+            }
+            return false
+        }
         return entries.filter { entry in
             guard let layer = byID[entry.layer.id] else { return false }
-            return (query.isEmpty || layer.name.lowercased().contains(query))
-                && (layerTypeFilter.isEmpty || layerTypeFilter.contains(layer.layerType))
+            return matched.contains(layer.id) || insideMatchedFolder(layer)
         }
     }
     /// Clears the panel's search text.
@@ -79,9 +97,9 @@ extension EditorSession {
     }
 }
 
-/// The Layers panel's title row: "Layers", with a magnifier that turns the title into a search field for layer names,
-/// and a funnel that opens the type filter (blue while one is on). The search stays open while it has text; Escape
-/// or clicking away with nothing typed puts the title back.
+/// The Layers panel's title row: "Layers", with a magnifier that turns the title into a search field for layer names
+/// (and itself into a close button), and a funnel that opens the type filter (blue while one is on). Escape on an
+/// empty search, or the close button, puts the title back.
 struct LayersHeader: View {
     @Bindable var session: EditorSession
     @State private var searching = false
@@ -89,33 +107,43 @@ struct LayersHeader: View {
     @State private var isPresentingFilter = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            if searching || !session.layerSearchText.isEmpty {
+        HStack(spacing: 2) {
+            if searching {
                 LayerSearchField(text: $session.layerSearchText) { searching = false }
+                    .padding(.trailing, 6)
             } else {
                 Text("Layers").font(.system(size: 12, weight: .semibold))
                 Spacer()
-                Button { searching = true } label: { Image(systemName: "magnifyingglass") }
-                    .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .help("Search layers by name").accessibilityLabel("Search layers")
-                    .accessibilityIdentifier("layerSearchButton")
             }
+            Button {
+                if searching { session.clearLayerSearch() }
+                searching.toggle()
+            } label: { headerIcon(searching ? "xmark" : "magnifyingglass") }
+                .buttonStyle(.plain)
+                .help(searching ? "Close the search" : "Search layers by name")
+                .accessibilityLabel(searching ? "Close search" : "Search layers")
+                .accessibilityIdentifier("layerSearchButton")
             Button { isPresentingFilter.toggle() } label: {
-                Image(systemName: "line.3.horizontal.decrease")
-                    .foregroundStyle(session.layerTypeFilter.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.accentColor))
+                headerIcon("line.3.horizontal.decrease", active: !session.layerTypeFilter.isEmpty)
             }
             .buttonStyle(.plain)
             .help("Show only some kinds of layer").accessibilityLabel("Filter the layer list")
             .popover(isPresented: $isPresentingFilter) { typeFilterPopover }
         }
-        .frame(height: 22)
-        .padding(.horizontal, 18).padding(.vertical, 14)
+        .frame(height: 26)
+        .padding(.leading, 18).padding(.trailing, 10).padding(.vertical, 12)
         .disabled(session.document?.layers.isEmpty != false)
     }
 
-    /// The funnel's contents. All Layers and Clear All concern the type toggles alone — the search
-    /// field brings its own clear button — so All Layers reads as on while no toggle is on, and
-    /// Clear All is enabled only while one is.
+    /// A title-row icon with room around it to click: the whole square, not just the glyph.
+    private func headerIcon(_ name: String, active: Bool = false) -> some View {
+        Image(systemName: name)
+            .foregroundStyle(active ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+            .frame(width: 26, height: 26)
+            .contentShape(Rectangle())
+    }
+
+    /// The funnel's contents: All Layers reads as on while no toggle is on, and turning it on clears them.
     private var typeFilterPopover: some View {
         VStack(alignment: .leading) {
             Toggle("All Layers", systemImage: "square.3.layers.3d", isOn: Binding(
@@ -125,12 +153,9 @@ struct LayersHeader: View {
             .labelReservedIconWidth(16)
             .accessibilityIdentifier("layerFilterAll")
             Divider()
-            ForEach(LayerType.allCases, id: \.self) { typeToggle($0) }
+            ForEach(LayerType.allCases.filter { $0 != .selected }, id: \.self) { typeToggle($0) }
             Divider()
-            Button("Clear All") { session.clearLayerTypeFilter() }
-                .controlSize(.large)
-                .frame(maxWidth: .infinity)
-                .disabled(session.layerTypeFilter.isEmpty)
+            typeToggle(.selected)
         }
         .padding()
     }
@@ -146,36 +171,59 @@ struct LayersHeader: View {
     }
 }
 
-/// The Layers panel's search field: AppKit's search field, which brings its own clear button and clears on Escape.
-/// It takes the keyboard when it appears; `end` runs once it's left empty, by Escape or a click elsewhere.
-private struct LayerSearchField: NSViewRepresentable {
+/// The Layers panel's search field, styled as the font list's: a magnifier and plain text in a box with a thin accent
+/// border. It takes the keyboard when it appears; `end` runs once it's left empty, by Escape or a click elsewhere.
+private struct LayerSearchField: View {
     @Binding var text: String
     var end: () -> Void
 
-    func makeNSView(context: Context) -> NSSearchField {
-        let field = NSSearchField()
+    var body: some View {
+        let box = RoundedRectangle(cornerRadius: 6, style: .continuous)
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.system(size: 11))
+            PlainSearchText(text: $text, end: end)
+        }
+        .padding(.horizontal, 7)
+        .frame(height: 24)
+        .overlay { box.strokeBorder(Color.accentColor, lineWidth: 1) }
+    }
+}
+
+/// The field itself: plain text, no bezel, no focus ring and no clear button.
+private struct PlainSearchText: NSViewRepresentable {
+    @Binding var text: String
+    var end: () -> Void
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         field.placeholderString = "Search Layers"
-        field.controlSize = .small
+        field.cell?.usesSingleLineMode = true
+        field.cell?.isScrollable = true
         field.delegate = context.coordinator
         field.setAccessibilityIdentifier("layerSearch")
         DispatchQueue.main.async { field.window?.makeFirstResponder(field) }
         return field
     }
 
-    func updateNSView(_ field: NSSearchField, context: Context) {
+    func updateNSView(_ field: NSTextField, context: Context) {
         // Only when they differ: writing the string back mid-edit would move the insertion point.
         if field.stringValue != text { field.stringValue = text }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text, end: end) }
 
-    final class Coordinator: NSObject, NSSearchFieldDelegate {
+    final class Coordinator: NSObject, NSTextFieldDelegate {
         let text: Binding<String>
         let end: () -> Void
         init(text: Binding<String>, end: @escaping () -> Void) { self.text = text; self.end = end }
 
         func controlTextDidChange(_ notification: Notification) {
-            guard let field = notification.object as? NSSearchField else { return }
+            guard let field = notification.object as? NSTextField else { return }
             text.wrappedValue = field.stringValue
         }
 
@@ -183,11 +231,16 @@ private struct LayerSearchField: NSViewRepresentable {
             if text.wrappedValue.isEmpty { end() }
         }
 
-        /// Escape clears the search; on an empty one it closes it and gives the canvas back the keyboard.
+        /// Escape clears the search, then on an empty one closes it and gives the canvas back the keyboard.
         func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-            guard selector == #selector(NSResponder.cancelOperation(_:)), text.wrappedValue.isEmpty else { return false }
-            control.window?.makeFirstResponder(nil)
-            end()
+            guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+            if text.wrappedValue.isEmpty {
+                control.window?.makeFirstResponder(nil)
+                end()
+            } else {
+                text.wrappedValue = ""
+                (control as? NSTextField)?.stringValue = ""
+            }
             return true
         }
     }

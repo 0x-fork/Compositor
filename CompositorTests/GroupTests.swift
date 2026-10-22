@@ -215,13 +215,20 @@ struct GroupTests {
 
         // The type toggles narrow by kind, on their own and together with the search.
         session.layerSearchText = ""
+        // A matching folder brings everything inside it along.
         session.layerTypeFilter = [.folder, .adjustment]
-        #expect(session.filteredLayerRows.map { $0.layer.id } == [folder, adjustment])
+        #expect(session.filteredLayerRows.map { $0.layer.id } == [folder, inside, adjustment])
         session.layerSearchText = "sky"
         #expect(session.filteredLayerRows.isEmpty)
         session.layerSearchText = ""
         session.layerTypeFilter = [.image]
         #expect(session.filteredLayerRows.map { $0.layer.id } == [inside, blank])
+        // Selected narrows to the selection, and follows it.
+        session.layerTypeFilter = [.selected]
+        session.selectLayer(blank)
+        #expect(session.filteredLayerRows.map { $0.layer.id } == [blank])
+        session.selectLayer(adjustment)
+        #expect(session.filteredLayerRows.map { $0.layer.id } == [adjustment])
         // With everything off the whole list is back, folders as collapsed as they were.
         session.toggleGroupExpansion(folder)
         session.layerTypeFilter = []
