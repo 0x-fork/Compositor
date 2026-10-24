@@ -47,12 +47,12 @@ nonisolated struct LensEffectSettings: Equatable, Sendable {
     var mistStrength: Double = 50
     var mistSize: Double = 30
     /// Prism: how strong the ghosted copies are, how many, how far apart (percent of the longer side), which way in
-    /// degrees (counterclockwise from right), and how far into the frame they reach from that edge (percent).
-    var prismAmount: Double = 70
-    var prismCopies: Double = 3
-    var prismOffset: Double = 11
+    /// degrees (counterclockwise from right), and how much they're softened, 0–100.
+    var prismAmount: Double = 80
+    var prismCopies: Double = 5
+    var prismOffset: Double = 6
     var prismAngle: Double = 180
-    var prismSpread: Double = 70
+    var prismBlur: Double = 0
     /// Bokeh, always a full lens blur: the discs' size (percent of the longer side), how brightly lights open into
     /// them, how much of a disc's light gathers at its rim, as many lenses draw it, and the aperture's shape.
     var bokehRadius: Double = 2
@@ -83,11 +83,11 @@ nonisolated struct LensEffectSettings: Equatable, Sendable {
         result.starAngle = ImageAdjustmentPixels.clamp(starAngle, -180...180, 15)
         result.mistStrength = ImageAdjustmentPixels.clamp(mistStrength, 0...100, 50)
         result.mistSize = ImageAdjustmentPixels.clamp(mistSize, 0...100, 30)
-        result.prismAmount = ImageAdjustmentPixels.clamp(prismAmount, 0...100, 70)
-        result.prismCopies = ImageAdjustmentPixels.clamp(prismCopies, 1...8, 3).rounded()
-        result.prismOffset = ImageAdjustmentPixels.clamp(prismOffset, 0...50, 11)
+        result.prismAmount = ImageAdjustmentPixels.clamp(prismAmount, 0...100, 80)
+        result.prismCopies = ImageAdjustmentPixels.clamp(prismCopies, 1...8, 5).rounded()
+        result.prismOffset = ImageAdjustmentPixels.clamp(prismOffset, 0...50, 6)
         result.prismAngle = ImageAdjustmentPixels.clamp(prismAngle, -180...180, 180)
-        result.prismSpread = ImageAdjustmentPixels.clamp(prismSpread, 10...100, 70)
+        result.prismBlur = ImageAdjustmentPixels.clamp(prismBlur, 0...100, 0)
         result.bokehRadius = ImageAdjustmentPixels.clamp(bokehRadius, Self.bokehSizes.lowerBound...Self.bokehSizes.upperBound, 2)
         result.bokehBrightness = ImageAdjustmentPixels.clamp(bokehBrightness, 0...100, 50)
         result.bokehRing = ImageAdjustmentPixels.clamp(bokehRing, 0...100, 100)
@@ -283,38 +283,31 @@ private nonisolated enum LensOptics {
         return scaled(curved, limit)
     }
 
-    /// A prism held at the lens's edge: copies of the picture stepped sideways, each a little fainter and softer and its
-    /// colors fanned a little wider, as light bent more times through the glass. They show where they're brighter than
-    /// the picture, so they echo into its darker parts, strongest at the edge they're pushed toward.
+    /// A prism held before the lens: copies of the picture stepped along a line, each fainter than the last, with a
+    /// thin color fringe from the glass. A copy shows where it's brighter than what's behind it, so lit shapes echo into
+    /// the shadows and nothing darkens. Blur softens the copies, more the farther they're pushed.
     static func prism(_ image: CIImage, _ settings: LensEffectSettings) -> CIImage {
         let extent = image.extent, side = max(extent.width, extent.height)
         let light = linear(image)
         let theta = settings.prismAngle * .pi / 180
         let direction = CGVector(dx: cos(theta), dy: sin(theta))
         let shift = side * settings.prismOffset / 100
-        var echoes = CIImage.empty()
-        for copy in 1...Int(settings.prismCopies) {
-            let step = CGFloat(copy)
+        var result = light
+        // Farthest first, so each nearer copy shows over it.
+        for copy in stride(from: Int(settings.prismCopies), through: 1, by: -1) {
             var ghost = CIImage.empty()
-            for (channel, stretch) in [(0, 1 + 0.012 * step), (1, 1.0), (2, 1 - 0.012 * step)] {
-                let moved = light.transformed(by: CGAffineTransform(translationX: direction.dx * shift * step * stretch,
-                                                                    y: direction.dy * shift * step * stretch))
+            for (channel, fringe) in [(0, 0.003), (1, 0.0), (2, -0.003)] {
+                let along = shift * CGFloat(copy) + side * fringe
+                let moved = light.transformed(by: CGAffineTransform(translationX: direction.dx * along, y: direction.dy * along))
                 ghost = add(scaled(moved, channel == 0 ? 1 : 0, channel == 1 ? 1 : 0, channel == 2 ? 1 : 0), to: ghost)
             }
-            let fade = pow(0.72, Double(copy - 1)) * settings.prismAmount / 100
-            ghost = scaled(ghost.clampedToExtent().applyingGaussianBlur(sigma: side * 0.004 * step).cropped(to: extent), fade)
-            echoes = copy == 1 ? ghost : lighten(ghost, echoes)
+            if settings.prismBlur > 0 {
+                ghost = ghost.clampedToExtent().applyingGaussianBlur(sigma: side * settings.prismBlur / 10_000 * Double(copy))
+            }
+            let fade = pow(0.78, Double(copy - 1)) * settings.prismAmount / 100
+            result = lighten(scaled(ghost.cropped(to: extent), fade), result)
         }
-        let reach = abs(direction.dx) * extent.width / 2 + abs(direction.dy) * extent.height / 2
-        let edge = CGPoint(x: extent.midX + direction.dx * reach, y: extent.midY + direction.dy * reach)
-        let depth = side * settings.prismSpread / 100
-        let inner = CGPoint(x: edge.x - direction.dx * depth, y: edge.y - direction.dy * depth)
-        let mask = CIFilter(name: "CILinearGradient", parameters: [
-            "inputPoint0": CIVector(cgPoint: edge), "inputPoint1": CIVector(cgPoint: inner),
-            "inputColor0": CIColor(red: 1, green: 1, blue: 1), "inputColor1": CIColor(red: 0, green: 0, blue: 0),
-        ])?.outputImage?.cropped(to: extent) ?? CIImage.empty()
-        let band = echoes.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: light, kCIInputMaskImageKey: mask])
-        return gamma(lighten(band, light))
+        return gamma(result)
     }
 
     static func lighten(_ image: CIImage, _ background: CIImage) -> CIImage {

@@ -403,9 +403,9 @@ struct FilterSheet: View {
             control("Offset", \.lens.prismOffset, range: 0...50, unit: "%", decimals: 0, logarithmic: false)
                 .help("How far apart the copies are")
             control("Angle", \.lens.prismAngle, range: -180...180, unit: "°", decimals: 0, logarithmic: false)
-                .help("Which way it's pushed, toward the edge the prism sits at")
-            control("Reach", \.lens.prismSpread, range: 10...100, unit: "%", decimals: 0, logarithmic: false)
-                .help("How far into the frame the copies show from that edge")
+                .help("Which way the copies step")
+            control("Blur", \.lens.prismBlur, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("Soften the copies, more the farther they're pushed")
         case .bokeh:
             control("Size", \.lens.bokehRadius, range: LensEffectSettings.bokehSizes, unit: "%", decimals: 1, logarithmic: false)
                 .help("How far out of focus: the size of each disc")
