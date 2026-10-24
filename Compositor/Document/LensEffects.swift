@@ -30,7 +30,8 @@ nonisolated struct LensEffectSettings: Equatable, Sendable {
     static let bokehSizes: ClosedRange<Double> = 0.5...6
 
     var effect: LensEffect = .anamorphicFlare
-    /// Anamorphic Flare and Starburst: how bright a light has to be to flare, 50–99% of white.
+    /// Anamorphic Flare and Starburst: how bright a light has to be to flare, 50–100%; past 95, how big and solid too
+    /// (see `LensOptics.sources`).
     var threshold: Double = 90
     /// Anamorphic Flare: strength 0–100, and the streak's reach as a percentage of the layer's longer side.
     var flareAmount: Double = 50
@@ -73,7 +74,7 @@ nonisolated struct LensEffectSettings: Equatable, Sendable {
 
     var normalized: Self {
         var result = self
-        result.threshold = ImageAdjustmentPixels.clamp(threshold, 50...99, 90)
+        result.threshold = ImageAdjustmentPixels.clamp(threshold, 50...100, 90)
         result.flareAmount = ImageAdjustmentPixels.clamp(flareAmount, 0...100, 50)
         result.flareLength = ImageAdjustmentPixels.clamp(flareLength, 1...100, 60)
         result.flareBlue = ImageAdjustmentPixels.clamp(flareBlue, 0...100, 80)
@@ -139,18 +140,51 @@ private nonisolated enum LensOptics {
 
     /// The light brighter than `threshold` (0–1, on the picture's own tones), in linear light, fading in above it.
     static func highlights(_ image: CIImage, threshold: Double) -> CIImage {
+        // Over black, not clear: a tone curve or blend reads a dim light divided by its alpha.
+        linear(image).applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: CIImage(color: .black), kCIInputMaskImageKey: brightness(image, above: threshold),
+        ]).cropped(to: image.extent)
+    }
+
+    /// How far each pixel is above `threshold` in brightness, 0–1, as a gray mask.
+    static func brightness(_ image: CIImage, above threshold: Double) -> CIImage {
         let t = min(0.95, max(0, threshold)), k = 1 - t
         let luminance = CIVector(x: 0.2126, y: 0.7152, z: 0.0722, w: 0)
         let gray = image.applyingFilter("CIColorMatrix", parameters: [
             "inputRVector": luminance, "inputGVector": luminance, "inputBVector": luminance,
             "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)])
-        let mask = gray.applyingFilter("CIToneCurve", parameters: [
+        return gray.applyingFilter("CIToneCurve", parameters: [
             "inputPoint0": CIVector(x: 0, y: 0), "inputPoint1": CIVector(x: t, y: 0),
             "inputPoint2": CIVector(x: t + k * 0.4, y: 0.25), "inputPoint3": CIVector(x: t + k * 0.75, y: 0.7),
             "inputPoint4": CIVector(x: 1, y: 1)])
-        // Over black, not clear: a tone curve or blend reads a dim light divided by its alpha.
+    }
+
+    /// The lights a flare or starburst is made from, by Threshold (0.5–1). Up to 0.95 it's how bright a light is. Past
+    /// that, a photo's brightest lights are all clipped to white, so it's how big and solid a bright spot is: a pixel
+    /// stays only where its surroundings are lit too, over a wider area the higher Threshold goes, until only the
+    /// strongest one or two sources are left.
+    static func sources(_ image: CIImage, threshold: Double) -> CIImage {
+        guard threshold > 0.95 else { return highlights(image, threshold: threshold) }
+        let extent = image.extent, side = max(extent.width, extent.height)
+        let density = min(1, (threshold - 0.95) / 0.05)
+        let lit = brightness(image, above: 0.95)
+        let around = lit.clampedToExtent().applyingGaussianBlur(sigma: side * 0.03 * density).cropped(to: extent)
+        // Measured against the photo's own strongest source, so the top of the range always leaves it.
+        var peak: Float = 0
+        PixelAdjust.ciContext.render(around.applyingFilter("CIAreaMaximum", parameters: [kCIInputExtentKey: CIVector(cgRect: extent)]),
+                                     toBitmap: &peak, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .Rf, colorSpace: nil)
+        guard peak > 0.001 else { return highlights(image, threshold: 0.95) }
+        // Scaled so the strongest is 1 first: a tone curve works at 8-bit steps, too coarse for these small values.
+        let cut = 0.25 + 0.6 * density, soft = 0.05
+        let solid = scaled(around, 1 / Double(peak)).applyingFilter("CIToneCurve", parameters: [
+            "inputPoint0": CIVector(x: 0, y: 0), "inputPoint1": CIVector(x: max(0, cut - soft), y: 0),
+            "inputPoint2": CIVector(x: cut, y: 0.5), "inputPoint3": CIVector(x: cut + soft, y: 1),
+            "inputPoint4": CIVector(x: max(1, cut + soft * 2), y: 1)])
+        // A light that qualifies keeps all of itself, not just its middle.
+        let whole = solid.applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: side * 0.03 * density]).cropped(to: extent)
+        let mask = lit.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: whole])
         return linear(image).applyingFilter("CIBlendWithMask", parameters: [
-            kCIInputBackgroundImageKey: CIImage(color: .black), kCIInputMaskImageKey: mask]).cropped(to: image.extent)
+            kCIInputBackgroundImageKey: CIImage(color: .black), kCIInputMaskImageKey: mask]).cropped(to: extent)
     }
 
     /// Only the lights shorter than `height` pixels: the light less its vertical opening, so a wide bright area drops
@@ -192,7 +226,7 @@ private nonisolated enum LensOptics {
         let extent = image.extent, side = max(extent.width, extent.height)
         let reach = side * settings.flareLength / 100, thin = max(0.5, side * 0.0008)
         let amount = settings.flareAmount / 50, blue = settings.flareBlue / 100
-        let spread = highlights(image, threshold: settings.threshold / 100).clampedToExtent()
+        let spread = sources(image, threshold: settings.threshold / 100).clampedToExtent()
             .applyingGaussianBlur(sigma: side * 0.004).cropped(to: extent)
         let lifted = add(spread, to: CIImage(color: CIColor(red: 0.12, green: 0.12, blue: 0.12)).cropped(to: extent))
         let sources = scaled(spread.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: lifted]), 1.6)
@@ -227,7 +261,7 @@ private nonisolated enum LensOptics {
     /// longer in red than in blue, as diffraction spreads longer waves farther.
     static func starburst(_ image: CIImage, _ settings: LensEffectSettings) -> CIImage {
         let side = max(image.extent.width, image.extent.height)
-        let light = highlights(image, threshold: settings.threshold / 100)
+        let light = sources(image, threshold: settings.threshold / 100)
         let reach = side * settings.starLength / 100, thin = max(0.5, side * 0.0006)
         let spokes = max(1, settings.starPoints / 2)
         var rays = CIImage.empty()
