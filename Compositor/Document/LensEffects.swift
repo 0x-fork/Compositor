@@ -53,6 +53,8 @@ nonisolated struct LensEffectSettings: Equatable, Sendable {
     var prismCopies: Double = 5
     var prismOffset: Double = 6
     var prismAngle: Double = 180
+    /// Copies on both sides of the picture rather than one, Copies of them each side.
+    var prismBothWays = false
     var prismBlur: Double = 0
     /// Bokeh, always a full lens blur: the discs' size (percent of the longer side), how brightly lights open into
     /// them, how much of a disc's light gathers at its rim, as many lenses draw it, and the aperture's shape.
@@ -67,7 +69,7 @@ nonisolated struct LensEffectSettings: Equatable, Sendable {
         case .anamorphicFlare: flareAmount == 0
         case .starburst: starAmount == 0
         case .mist: mistStrength == 0
-        case .prism: prismAmount == 0 || prismOffset == 0
+        case .prism: prismAmount == 0
         case .bokeh: false
         }
     }
@@ -317,9 +319,9 @@ private nonisolated enum LensOptics {
         return scaled(curved, limit)
     }
 
-    /// A prism held before the lens: copies of the picture stepped along a line, each fainter than the last, with a
-    /// thin color fringe from the glass. A copy shows where it's brighter than what's behind it, so lit shapes echo into
-    /// the shadows and nothing darkens. Blur softens the copies, more the farther they're pushed.
+    /// A prism held before the lens: copies of the picture stepped along a line, one way or both, each fainter than the
+    /// last, with a thin color fringe from the glass. A copy shows where it's brighter than what's behind it, so lit
+    /// shapes echo into the shadows and nothing darkens. Blur softens the copies, more the farther they're pushed.
     static func prism(_ image: CIImage, _ settings: LensEffectSettings) -> CIImage {
         let extent = image.extent, side = max(extent.width, extent.height)
         let light = linear(image)
@@ -328,13 +330,14 @@ private nonisolated enum LensOptics {
         let shift = side * settings.prismOffset / 100
         var result = light
         // Farthest first, so each nearer copy shows over it.
+        let sides: [CGFloat] = settings.prismBothWays ? [1, -1] : [1]
         for copy in stride(from: Int(settings.prismCopies), through: 1, by: -1) {
             var ghost = CIImage.empty()
-            for (channel, fringe) in [(0, 0.003), (1, 0.0), (2, -0.003)] {
-                let along = shift * CGFloat(copy) + side * fringe
+            for way in sides { for (channel, fringe) in [(0, 0.003), (1, 0.0), (2, -0.003)] {
+                let along = way * (shift * CGFloat(copy) + side * fringe)
                 let moved = light.transformed(by: CGAffineTransform(translationX: direction.dx * along, y: direction.dy * along))
-                ghost = add(scaled(moved, channel == 0 ? 1 : 0, channel == 1 ? 1 : 0, channel == 2 ? 1 : 0), to: ghost)
-            }
+                ghost = lighten(scaled(moved, channel == 0 ? 1 : 0, channel == 1 ? 1 : 0, channel == 2 ? 1 : 0), ghost)
+            } }
             if settings.prismBlur > 0 {
                 ghost = ghost.clampedToExtent().applyingGaussianBlur(sigma: side * settings.prismBlur / 10_000 * Double(copy))
             }

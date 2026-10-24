@@ -406,6 +406,15 @@ struct FilterSheet: View {
                 .help("Which way the copies step")
             control("Blur", \.lens.prismBlur, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
                 .help("Soften the copies, more the farther they're pushed")
+            HStack(spacing: 10) {
+                Text("Direction")
+                Picker("Direction", selection: Binding(get: { settings.lens.prismBothWays }, set: { new in update { $0.lens.prismBothWays = new } })) {
+                    Text("One Way").tag(false)
+                    Text("Both Ways").tag(true)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                .help("Copies to one side of the picture, or out to both")
+            }
         case .bokeh:
             control("Size", \.lens.bokehRadius, range: LensEffectSettings.bokehSizes, unit: "%", decimals: 1, logarithmic: false)
                 .help("How far out of focus: the size of each disc")
