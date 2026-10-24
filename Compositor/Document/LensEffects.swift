@@ -30,7 +30,8 @@ nonisolated struct LensEffectSettings: Equatable, Sendable {
     static let bokehSizes: ClosedRange<Double> = 0.5...6
 
     var effect: LensEffect = .anamorphicFlare
-    /// Anamorphic Flare and Starburst: how bright a light has to be to flare, 50–99% of white.
+    /// Anamorphic Flare and Starburst: how bright a light has to be to flare, 50–100%; past 95, how big and solid too
+    /// (see `LensOptics.sources`).
     var threshold: Double = 90
     /// Anamorphic Flare: strength 0–100, and the streak's reach as a percentage of the layer's longer side.
     var flareAmount: Double = 50
@@ -47,12 +48,14 @@ nonisolated struct LensEffectSettings: Equatable, Sendable {
     var mistStrength: Double = 50
     var mistSize: Double = 30
     /// Prism: how strong the ghosted copies are, how many, how far apart (percent of the longer side), which way in
-    /// degrees (counterclockwise from right), and how far into the frame they reach from that edge (percent).
-    var prismAmount: Double = 70
-    var prismCopies: Double = 3
-    var prismOffset: Double = 11
+    /// degrees (counterclockwise from right), and how much they're softened, 0–100.
+    var prismAmount: Double = 80
+    var prismCopies: Double = 5
+    var prismOffset: Double = 6
     var prismAngle: Double = 180
-    var prismSpread: Double = 70
+    /// Copies on both sides of the picture rather than one, Copies of them each side.
+    var prismBothWays = false
+    var prismBlur: Double = 0
     /// Bokeh, always a full lens blur: the discs' size (percent of the longer side), how brightly lights open into
     /// them, how much of a disc's light gathers at its rim, as many lenses draw it, and the aperture's shape.
     var bokehRadius: Double = 2
@@ -66,14 +69,14 @@ nonisolated struct LensEffectSettings: Equatable, Sendable {
         case .anamorphicFlare: flareAmount == 0
         case .starburst: starAmount == 0
         case .mist: mistStrength == 0
-        case .prism: prismAmount == 0 || prismOffset == 0
+        case .prism: prismAmount == 0
         case .bokeh: false
         }
     }
 
     var normalized: Self {
         var result = self
-        result.threshold = ImageAdjustmentPixels.clamp(threshold, 50...99, 90)
+        result.threshold = ImageAdjustmentPixels.clamp(threshold, 50...100, 90)
         result.flareAmount = ImageAdjustmentPixels.clamp(flareAmount, 0...100, 50)
         result.flareLength = ImageAdjustmentPixels.clamp(flareLength, 1...100, 60)
         result.flareBlue = ImageAdjustmentPixels.clamp(flareBlue, 0...100, 80)
@@ -83,11 +86,11 @@ nonisolated struct LensEffectSettings: Equatable, Sendable {
         result.starAngle = ImageAdjustmentPixels.clamp(starAngle, -180...180, 15)
         result.mistStrength = ImageAdjustmentPixels.clamp(mistStrength, 0...100, 50)
         result.mistSize = ImageAdjustmentPixels.clamp(mistSize, 0...100, 30)
-        result.prismAmount = ImageAdjustmentPixels.clamp(prismAmount, 0...100, 70)
-        result.prismCopies = ImageAdjustmentPixels.clamp(prismCopies, 1...8, 3).rounded()
-        result.prismOffset = ImageAdjustmentPixels.clamp(prismOffset, 0...50, 11)
+        result.prismAmount = ImageAdjustmentPixels.clamp(prismAmount, 0...100, 80)
+        result.prismCopies = ImageAdjustmentPixels.clamp(prismCopies, 1...8, 5).rounded()
+        result.prismOffset = ImageAdjustmentPixels.clamp(prismOffset, 0...50, 6)
         result.prismAngle = ImageAdjustmentPixels.clamp(prismAngle, -180...180, 180)
-        result.prismSpread = ImageAdjustmentPixels.clamp(prismSpread, 10...100, 70)
+        result.prismBlur = ImageAdjustmentPixels.clamp(prismBlur, 0...100, 0)
         result.bokehRadius = ImageAdjustmentPixels.clamp(bokehRadius, Self.bokehSizes.lowerBound...Self.bokehSizes.upperBound, 2)
         result.bokehBrightness = ImageAdjustmentPixels.clamp(bokehBrightness, 0...100, 50)
         result.bokehRing = ImageAdjustmentPixels.clamp(bokehRing, 0...100, 100)
@@ -139,18 +142,51 @@ private nonisolated enum LensOptics {
 
     /// The light brighter than `threshold` (0–1, on the picture's own tones), in linear light, fading in above it.
     static func highlights(_ image: CIImage, threshold: Double) -> CIImage {
+        // Over black, not clear: a tone curve or blend reads a dim light divided by its alpha.
+        linear(image).applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: CIImage(color: .black), kCIInputMaskImageKey: brightness(image, above: threshold),
+        ]).cropped(to: image.extent)
+    }
+
+    /// How far each pixel is above `threshold` in brightness, 0–1, as a gray mask.
+    static func brightness(_ image: CIImage, above threshold: Double) -> CIImage {
         let t = min(0.95, max(0, threshold)), k = 1 - t
         let luminance = CIVector(x: 0.2126, y: 0.7152, z: 0.0722, w: 0)
         let gray = image.applyingFilter("CIColorMatrix", parameters: [
             "inputRVector": luminance, "inputGVector": luminance, "inputBVector": luminance,
             "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 1)])
-        let mask = gray.applyingFilter("CIToneCurve", parameters: [
+        return gray.applyingFilter("CIToneCurve", parameters: [
             "inputPoint0": CIVector(x: 0, y: 0), "inputPoint1": CIVector(x: t, y: 0),
             "inputPoint2": CIVector(x: t + k * 0.4, y: 0.25), "inputPoint3": CIVector(x: t + k * 0.75, y: 0.7),
             "inputPoint4": CIVector(x: 1, y: 1)])
-        // Over black, not clear: a tone curve or blend reads a dim light divided by its alpha.
+    }
+
+    /// The lights a flare or starburst is made from, by Threshold (0.5–1). Up to 0.95 it's how bright a light is. Past
+    /// that, a photo's brightest lights are all clipped to white, so it's how big and solid a bright spot is: a pixel
+    /// stays only where its surroundings are lit too, over a wider area the higher Threshold goes, until only the
+    /// strongest one or two sources are left.
+    static func sources(_ image: CIImage, threshold: Double) -> CIImage {
+        guard threshold > 0.95 else { return highlights(image, threshold: threshold) }
+        let extent = image.extent, side = max(extent.width, extent.height)
+        let density = min(1, (threshold - 0.95) / 0.05)
+        let lit = brightness(image, above: 0.95)
+        let around = lit.clampedToExtent().applyingGaussianBlur(sigma: side * 0.03 * density).cropped(to: extent)
+        // Measured against the photo's own strongest source, so the top of the range always leaves it.
+        var peak: Float = 0
+        PixelAdjust.ciContext.render(around.applyingFilter("CIAreaMaximum", parameters: [kCIInputExtentKey: CIVector(cgRect: extent)]),
+                                     toBitmap: &peak, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .Rf, colorSpace: nil)
+        guard peak > 0.001 else { return highlights(image, threshold: 0.95) }
+        // Scaled so the strongest is 1 first: a tone curve works at 8-bit steps, too coarse for these small values.
+        let cut = 0.25 + 0.6 * density, soft = 0.05
+        let solid = scaled(around, 1 / Double(peak)).applyingFilter("CIToneCurve", parameters: [
+            "inputPoint0": CIVector(x: 0, y: 0), "inputPoint1": CIVector(x: max(0, cut - soft), y: 0),
+            "inputPoint2": CIVector(x: cut, y: 0.5), "inputPoint3": CIVector(x: cut + soft, y: 1),
+            "inputPoint4": CIVector(x: max(1, cut + soft * 2), y: 1)])
+        // A light that qualifies keeps all of itself, not just its middle.
+        let whole = solid.applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: side * 0.03 * density]).cropped(to: extent)
+        let mask = lit.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: whole])
         return linear(image).applyingFilter("CIBlendWithMask", parameters: [
-            kCIInputBackgroundImageKey: CIImage(color: .black), kCIInputMaskImageKey: mask]).cropped(to: image.extent)
+            kCIInputBackgroundImageKey: CIImage(color: .black), kCIInputMaskImageKey: mask]).cropped(to: extent)
     }
 
     /// Only the lights shorter than `height` pixels: the light less its vertical opening, so a wide bright area drops
@@ -192,7 +228,7 @@ private nonisolated enum LensOptics {
         let extent = image.extent, side = max(extent.width, extent.height)
         let reach = side * settings.flareLength / 100, thin = max(0.5, side * 0.0008)
         let amount = settings.flareAmount / 50, blue = settings.flareBlue / 100
-        let spread = highlights(image, threshold: settings.threshold / 100).clampedToExtent()
+        let spread = sources(image, threshold: settings.threshold / 100).clampedToExtent()
             .applyingGaussianBlur(sigma: side * 0.004).cropped(to: extent)
         let lifted = add(spread, to: CIImage(color: CIColor(red: 0.12, green: 0.12, blue: 0.12)).cropped(to: extent))
         let sources = scaled(spread.applyingFilter("CIMultiplyCompositing", parameters: [kCIInputBackgroundImageKey: lifted]), 1.6)
@@ -227,7 +263,7 @@ private nonisolated enum LensOptics {
     /// longer in red than in blue, as diffraction spreads longer waves farther.
     static func starburst(_ image: CIImage, _ settings: LensEffectSettings) -> CIImage {
         let side = max(image.extent.width, image.extent.height)
-        let light = highlights(image, threshold: settings.threshold / 100)
+        let light = sources(image, threshold: settings.threshold / 100)
         let reach = side * settings.starLength / 100, thin = max(0.5, side * 0.0006)
         let spokes = max(1, settings.starPoints / 2)
         var rays = CIImage.empty()
@@ -283,38 +319,32 @@ private nonisolated enum LensOptics {
         return scaled(curved, limit)
     }
 
-    /// A prism held at the lens's edge: copies of the picture stepped sideways, each a little fainter and softer and its
-    /// colors fanned a little wider, as light bent more times through the glass. They show where they're brighter than
-    /// the picture, so they echo into its darker parts, strongest at the edge they're pushed toward.
+    /// A prism held before the lens: copies of the picture stepped along a line, one way or both, each fainter than the
+    /// last, with a thin color fringe from the glass. A copy shows where it's brighter than what's behind it, so lit
+    /// shapes echo into the shadows and nothing darkens. Blur softens the copies, more the farther they're pushed.
     static func prism(_ image: CIImage, _ settings: LensEffectSettings) -> CIImage {
         let extent = image.extent, side = max(extent.width, extent.height)
         let light = linear(image)
         let theta = settings.prismAngle * .pi / 180
         let direction = CGVector(dx: cos(theta), dy: sin(theta))
         let shift = side * settings.prismOffset / 100
-        var echoes = CIImage.empty()
-        for copy in 1...Int(settings.prismCopies) {
-            let step = CGFloat(copy)
+        var result = light
+        // Farthest first, so each nearer copy shows over it.
+        let sides: [CGFloat] = settings.prismBothWays ? [1, -1] : [1]
+        for copy in stride(from: Int(settings.prismCopies), through: 1, by: -1) {
             var ghost = CIImage.empty()
-            for (channel, stretch) in [(0, 1 + 0.012 * step), (1, 1.0), (2, 1 - 0.012 * step)] {
-                let moved = light.transformed(by: CGAffineTransform(translationX: direction.dx * shift * step * stretch,
-                                                                    y: direction.dy * shift * step * stretch))
-                ghost = add(scaled(moved, channel == 0 ? 1 : 0, channel == 1 ? 1 : 0, channel == 2 ? 1 : 0), to: ghost)
+            for way in sides { for (channel, fringe) in [(0, 0.003), (1, 0.0), (2, -0.003)] {
+                let along = way * (shift * CGFloat(copy) + side * fringe)
+                let moved = light.transformed(by: CGAffineTransform(translationX: direction.dx * along, y: direction.dy * along))
+                ghost = lighten(scaled(moved, channel == 0 ? 1 : 0, channel == 1 ? 1 : 0, channel == 2 ? 1 : 0), ghost)
+            } }
+            if settings.prismBlur > 0 {
+                ghost = ghost.clampedToExtent().applyingGaussianBlur(sigma: side * settings.prismBlur / 10_000 * Double(copy))
             }
-            let fade = pow(0.72, Double(copy - 1)) * settings.prismAmount / 100
-            ghost = scaled(ghost.clampedToExtent().applyingGaussianBlur(sigma: side * 0.004 * step).cropped(to: extent), fade)
-            echoes = copy == 1 ? ghost : lighten(ghost, echoes)
+            let fade = pow(0.78, Double(copy - 1)) * settings.prismAmount / 100
+            result = lighten(scaled(ghost.cropped(to: extent), fade), result)
         }
-        let reach = abs(direction.dx) * extent.width / 2 + abs(direction.dy) * extent.height / 2
-        let edge = CGPoint(x: extent.midX + direction.dx * reach, y: extent.midY + direction.dy * reach)
-        let depth = side * settings.prismSpread / 100
-        let inner = CGPoint(x: edge.x - direction.dx * depth, y: edge.y - direction.dy * depth)
-        let mask = CIFilter(name: "CILinearGradient", parameters: [
-            "inputPoint0": CIVector(cgPoint: edge), "inputPoint1": CIVector(cgPoint: inner),
-            "inputColor0": CIColor(red: 1, green: 1, blue: 1), "inputColor1": CIColor(red: 0, green: 0, blue: 0),
-        ])?.outputImage?.cropped(to: extent) ?? CIImage.empty()
-        let band = echoes.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: light, kCIInputMaskImageKey: mask])
-        return gamma(lighten(band, light))
+        return gamma(result)
     }
 
     static func lighten(_ image: CIImage, _ background: CIImage) -> CIImage {
