@@ -632,7 +632,17 @@ nonisolated enum GPUAdjustment {
             return MetalFinishing.tonalContrast(image, radius: tonal.radius * scale, tonal)
         case .lensEffects:
             let side = document.map { max($0.width, $0.height) * scale } ?? max(image.extent.width, image.extent.height)
-            return try? (adjustment.filterLayer.lens ?? LensEffectSettings()).apply(to: image, side: side)
+            // The frame's y points down, the filter's up: angles counterclockwise there turn the other way here.
+            var lens = adjustment.filterLayer.lens ?? LensEffectSettings()
+            lens.starAngle = -lens.starAngle
+            lens.prismAngle = -lens.prismAngle
+            // Only what's in the document, as the export sees it: a layer reaching past the canvas would otherwise add
+            // lights the export never has.
+            let page = document.map { CGRect(origin: .zero, size: $0).applying(mapping) }
+            // Sampled smoothly, as the export's pixels are: the canvas copies a layer pixel for pixel with nearest
+            // sampling, and the spikes' rotations would carry that on, keeping hard bright pixels the export smooths.
+            let smooth = image.samplingLinear()
+            return try? lens.apply(to: page.map { smooth.cropped(to: $0) } ?? smooth, side: side)
         case .rgbSplit:
             let settings = adjustment.filterLayer
             let distance = settings.rgbSplitDistance * scale, blur = settings.rgbSplitBlur * scale

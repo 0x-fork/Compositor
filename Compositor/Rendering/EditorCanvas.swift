@@ -27,6 +27,13 @@ final class CanvasView: NSView {
     private var adjustmentCache: [UUID: (key: [String], image: CIImage)] = [:]
     /// Off, each adjustment is computed every frame, as before the cache: for comparing the two.
     var cachesAdjustments = true
+    /// A Lens Effects layer's picture made as Copy Merged and the export make it — everything up to and including the
+    /// layer, at the document's own pixels, by the same code — with what it was made from. Shown in place of the
+    /// canvas's own working while that still matches, so what's on screen is what copying it gives.
+    private var lensExact: [UUID: (key: [String], image: CGImage)] = [:]
+    /// What each Lens Effects layer was made from on the last frame, and the one waiting to be made exactly.
+    private var lensLatest: [UUID: [String]] = [:]
+    private var lensWaiting: [UUID: [String]] = [:]
     /// The effects rendered for the text being edited, and what they were rendered from.
     private var draftEffects: (image: CGImage, effects: LayerEffects, transform: LayerTransform, rendered: CGImage, inset: CGFloat)?
     /// Which layer and text `draftEffects` were made for, so they can stand in once the edit is committed.
@@ -993,7 +1000,10 @@ final class CanvasView: NSView {
             let visible = document.effectiveVisibleIDs
             let padding = document.layers.filter { visible.contains($0.id) }
                 .compactMap(\.adjustment).map(\.samplingMargin).max() ?? 0
-            AdjustmentSurface.draw(in: context, padding: padding * scale) {
+            // The document where it's drawn: no adjustment needs to read past it.
+            let corner = center(.zero), far = center(CGPoint(x: document.size.width, y: document.size.height))
+            let page = CGRect(x: min(corner.x, far.x), y: min(corner.y, far.y), width: abs(far.x - corner.x), height: abs(far.y - corner.y))
+            AdjustmentSurface.draw(in: context, padding: padding * scale, within: page) {
                 self.drawLayers(document, scale: scale, center: center, in: $0, onSurface: true)
             }
             return
@@ -1186,6 +1196,7 @@ final class CanvasView: NSView {
         live.adjustmentOpacity = { byID[$0]?.effectiveOpacity(in: byID) ?? 1 }
         // Adjustments run on the surface's pixels, one per screen pixel (see AdjustmentSurface).
         live.adjustmentScale = scale * LayerRenderer.deviceScale(of: context)
+        live.adjustmentDocument = document.size
         live.resolution = LayerRenderer.deviceScale(of: context)
         let corner = center(.zero)
         live.adjustmentRegion = { rect in
@@ -2735,6 +2746,32 @@ extension CanvasView {
         return true
     }
 
+    /// Makes `id`'s picture as Copy Merged would — the document with everything above the layer hidden, composited by the
+    /// export's code — once the canvas has settled on `key`, then redraws to show it.
+    private func makeLensExact(_ id: UUID, key: [String]) {
+        guard lensWaiting[id] != key else { return }
+        lensWaiting[id] = key
+        // On the run loop, so it waits while a drag or a slider keeps the canvas busy.
+        Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in MainActor.assumeIsolated {
+            guard let self, self.lensWaiting[id] == key else { return }
+            self.lensWaiting[id] = nil
+            // Only if the canvas still shows what this was asked for.
+            guard self.lensLatest[id] == key, var document = self.session.document,
+                  document.layers.contains(where: { $0.id == id }) else { return }
+            let underneath = Set(document.renderLayers.map(\.id).prefix { $0 != id }).union([id])
+            for index in document.layers.indices where document.layers[index].isGroup != true && !underneath.contains(document.layers[index].id) {
+                document.layers[index].isVisible = false
+            }
+            let width = Int(document.size.width.rounded()), height = Int(document.size.height.rounded())
+            guard let context = try? BrushRaster.context(width: width, height: height, mask: false) else { return }
+            self.session.drawLiveComposite(document, in: context)
+            guard let image = context.makeImage() else { return }
+            self.lensExact = self.lensExact.filter { self.lensLatest[$0.key] != nil }
+            self.lensExact[id] = (key, image)
+            self.needsDisplay = true
+        } }
+    }
+
     /// The frame the GPU would draw, `size` screen pixels across, for comparing with the Core Graphics canvas.
     func gpuFrame(size: CGSize) -> CIImage? {
         guard let renderer = GPUCanvasRenderer.shared, let document = session.document else { return nil }
@@ -3182,7 +3219,14 @@ extension CanvasView {
         }
         // An adjustment re-colors what's under it, through its own mask and its folders' masks, at its opacity.
         func adjusted(_ below: CIImage, by layer: ImageLayer, adjustment: LayerAdjustment, folders: Bool) -> CIImage? {
-            guard var changed = GPUAdjustment.apply(adjustment, to: below, scale: placement.scale, mapping: placement.mapping,
+            // Lens Effects works on what's below as pixels, as the export does: the canvas places layers with nearest sampling,
+            // which its spikes' rotations would carry through, keeping hard bright pixels the export smooths.
+            var source = below
+            if adjustment.kind == .lensEffects {
+                let page = CGRect(origin: .zero, size: document.size).applying(placement.mapping)
+                source = placement.renderer.keep(below.cropped(to: page)) ?? below
+            }
+            guard var changed = GPUAdjustment.apply(adjustment, to: source, scale: placement.scale, mapping: placement.mapping,
                                                     hdr: hasHDR, document: session.document?.size)
             else { return nil }
             // In a blend mode, the adjusted colors blend with the ones under them at full coverage, and the original
@@ -3277,6 +3321,15 @@ extension CanvasView {
                 while let current = folder, depth < 64 { _ = folderMask(current); folder = byID[current]?.parentID; depth += 1 }
                 prints.append(adjustmentPrint(layer, adjustment))
                 let steady = !prints.contains { $0.hasPrefix("transient") }
+                if adjustment.kind == .lensEffects {
+                    lensLatest[id] = prints
+                    if steady, let exact = lensExact[id], exact.key == prints,
+                       let placed = placement.place(exact.image, transform: LayerTransform(origin: .zero, size: document.size)) {
+                        result = placed
+                        continue
+                    }
+                    if steady { makeLensExact(id, key: prints) }
+                }
                 if cachesAdjustments, steady, let entry = adjustmentCache[id], entry.key == prints {
                     result = entry.image
                     cached.insert(id)
