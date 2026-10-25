@@ -87,6 +87,24 @@ import QuartzCore
     /// `image` as a texture, `level` halvings smaller (sharp reductions for zooming out, as `DownsampleCache` makes on
     /// the CPU). A mask comes back with its values in the red channel. A `transient` image — one that's replaced every
     /// frame, like a Smudge stroke's — is kept only for the frame it's drawn in, and reduced as it's drawn.
+    /// `image` worked out now and kept in a texture, in the working space at its precision, so drawing it later costs a
+    /// read rather than everything it was made from. Nil when it's unbounded or too big to keep.
+    func keep(_ image: CIImage) -> CIImage? {
+        let extent = image.extent
+        guard !extent.isInfinite, !extent.isEmpty else { return nil }
+        let bounds = extent.integral
+        guard bounds.width <= 16384, bounds.height <= 16384, bounds.width * bounds.height <= 16_000_000 else { return nil }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: Int(bounds.width),
+                                                                  height: Int(bounds.height), mipmapped: false)
+        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
+        descriptor.storageMode = .private
+        guard let texture = device.makeTexture(descriptor: descriptor), let command = queue.makeCommandBuffer() else { return nil }
+        context.render(image, to: texture, commandBuffer: command, bounds: bounds, colorSpace: DeepLayer.hdrSpace)
+        command.commit()
+        guard let read = CIImage(mtlTexture: texture, options: [.colorSpace: DeepLayer.hdrSpace]) else { return nil }
+        return read.transformed(by: CGAffineTransform(translationX: bounds.minX, y: bounds.minY)).cropped(to: extent)
+    }
+
     func image(_ image: CGImage, level: Int = 0, mask: Bool = false, transient: Bool = false) -> CIImage? {
         texture(image, level: level, mask: mask, transient: transient, drawing: true)
     }

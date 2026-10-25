@@ -5,29 +5,30 @@ import Metal
 /// Bokeh's lens blur on the GPU: every pixel gathers the light around it within the aperture's shape — round, a
 /// hexagon of blades, an anamorphic oval, or a cat's eye clipped toward the frame's edges — more of it at the rim when
 /// Ring asks. It works in half floats, so lights brighter than white keep their brightness through the blur. A big
-/// blur runs on a smaller copy, which it hides, so its cost stays the same however wide the discs.
+/// blur runs on a smaller copy, which it hides, so its cost stays the same however wide the discs. It runs inside the
+/// Core Image graph (`BokehKernel`), so nothing is read back to the CPU on the way.
 nonisolated final class MetalBokeh: @unchecked Sendable {
     static let shared: MetalBokeh? = try? MetalBokeh()
     /// The widest disc radius gathered at full size, in pixels.
     static let largestRadius: CGFloat = 20
-    private let device: MTLDevice
-    private let queue: MTLCommandQueue
-    private let pipeline: MTLComputePipelineState
+    let pipeline: MTLComputePipelineState
 
     struct Parameters {
         var radius: Float
         var shape: UInt32
         var ring: Float
-        var width: Float
-        var height: Float
+        /// The whole blurred region, in the smaller copy's coordinates (y up): its middle is the frame's, for Cat's Eye.
+        var regionOrigin: SIMD2<Float> = .zero
+        var regionSize: SIMD2<Float> = SIMD2(1, 1)
+        /// Where the output's and input's texels sit in those coordinates; their rows run top-down.
+        var outputTop: SIMD2<Float> = .zero
+        var inputTop: SIMD2<Float> = .zero
     }
 
     private init() throws {
-        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue(),
+        guard let device = MTLCreateSystemDefaultDevice(),
               let function = try device.makeLibrary(source: Self.source, options: nil).makeFunction(name: "bokeh")
         else { throw ExportError.render }
-        self.device = device
-        self.queue = queue
         pipeline = try device.makeComputePipelineState(function: function)
     }
 
@@ -39,35 +40,14 @@ nonisolated final class MetalBokeh: @unchecked Sendable {
         let margin = (small * 1.7).rounded(.up) + 2
         let region = CGRect(x: extent.minX * shrink, y: extent.minY * shrink, width: extent.width * shrink, height: extent.height * shrink)
             .insetBy(dx: -margin, dy: -margin).integral
-        let width = Int(region.width), height = Int(region.height), rowBytes = width * 8
-        var pixels = [UInt16](repeating: 0, count: width * height * 4)
         let source = image.clampedToExtent().transformed(by: CGAffineTransform(scaleX: shrink, y: shrink))
-        PixelAdjust.ciContext.render(source, toBitmap: &pixels, rowBytes: rowBytes, bounds: region, format: .RGBAh, colorSpace: nil)
-
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false)
-        descriptor.usage = [.shaderRead, .shaderWrite]
-        descriptor.storageMode = .shared
-        guard let input = device.makeTexture(descriptor: descriptor), let output = device.makeTexture(descriptor: descriptor),
-              let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else { throw ExportError.render }
-        let all = MTLRegionMake2D(0, 0, width, height)
-        input.replace(region: all, mipmapLevel: 0, withBytes: pixels, bytesPerRow: rowBytes)
-        var parameters = Parameters(radius: Float(small), shape: shape.index, ring: Float(ring),
-                                    width: Float(width), height: Float(height))
-        encoder.setComputePipelineState(pipeline)
-        encoder.setTexture(input, index: 0)
-        encoder.setTexture(output, index: 1)
-        encoder.setBytes(&parameters, length: MemoryLayout<Parameters>.stride, index: 0)
-        encoder.dispatchThreads(MTLSize(width: width, height: height, depth: 1), threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
-        encoder.endEncoding()
-        command.commit()
-        command.waitUntilCompleted()
-        guard command.status == .completed else { throw command.error ?? ExportError.render }
-        output.getBytes(&pixels, bytesPerRow: rowBytes, from: all, mipmapLevel: 0)
-
-        let blurred = CIImage(bitmapData: Data(bytes: pixels, count: pixels.count * 2), bytesPerRow: rowBytes,
-                              size: CGSize(width: width, height: height), format: .RGBAh, colorSpace: nil)
-        return blurred.transformed(by: CGAffineTransform(translationX: region.minX, y: region.minY)
-            .concatenating(CGAffineTransform(scaleX: 1 / shrink, y: 1 / shrink))).cropped(to: extent)
+        var parameters = Parameters(radius: Float(small), shape: shape.index, ring: Float(ring))
+        parameters.regionOrigin = SIMD2(Float(region.minX), Float(region.minY))
+        parameters.regionSize = SIMD2(Float(region.width), Float(region.height))
+        let reach = (small * 1.62).rounded(.up) + 2
+        let blurred = try BokehKernel.apply(withExtent: region, inputs: [source], arguments: [
+            "parameters": withUnsafeBytes(of: parameters) { Data($0) }, "reach": reach])
+        return blurred.transformed(by: CGAffineTransform(scaleX: 1 / shrink, y: 1 / shrink)).cropped(to: extent)
     }
 
     // Compiled at launch by the system's Metal compiler, as the brush's is.
@@ -79,8 +59,10 @@ struct Parameters {
     float radius;
     uint shape;     // 0 round, 1 hexagon, 2 oval, 3 cat's eye
     float ring;
-    float width;
-    float height;
+    float2 regionOrigin;
+    float2 regionSize;
+    float2 outputTop;
+    float2 inputTop;
 };
 
 // How far `o` (in disc radii) is toward the aperture's edge, 1 on it.
@@ -103,8 +85,12 @@ kernel void bokeh(texture2d<float, access::sample> image [[texture(0)]],
                   uint2 pixel [[thread_position_in_grid]]) {
     if (pixel.x >= result.get_width() || pixel.y >= result.get_height()) return;
     constexpr sampler linear(coord::pixel, address::clamp_to_edge, filter::linear);
-    float2 at = float2(pixel) + 0.5;
-    float2 fromMiddle = (at - float2(p.width, p.height) * 0.5) / (max(p.width, p.height) * 0.5);
+    // This pixel's center measured from the region's top-left corner, rows down, as one texture over all of it has it.
+    float2 regionTop = float2(p.regionOrigin.x, p.regionOrigin.y + p.regionSize.y);
+    float2 here = float2(p.outputTop.x - regionTop.x, regionTop.y - p.outputTop.y) + float2(pixel) + 0.5;
+    float2 fromMiddle = (here - p.regionSize * 0.5) / (max(p.regionSize.x, p.regionSize.y) * 0.5);
+    // The same place in the input's texels.
+    float2 at = float2(p.outputTop.x - p.inputTop.x, p.inputTop.y - p.outputTop.y) + float2(pixel) + 0.5;
     float2 outward = fromMiddle * min(1.0, length(fromMiddle));
     float radius = max(p.radius, 0.5);
     int reachX = int(ceil(radius)), reachY = int(ceil(radius * (p.shape == 2 ? 1.62 : 1.0)));
@@ -126,4 +112,34 @@ kernel void bokeh(texture2d<float, access::sample> image [[texture(0)]],
     result.write(sum / max(total, 1e-5), pixel);
 }
 """
+}
+
+/// Runs `MetalBokeh` inside a Core Image graph, as `DispersionKernel` runs RGB Split's.
+final class BokehKernel: CIImageProcessorKernel {
+    override class var outputFormat: CIFormat { .RGBAh }
+    override class func formatForInput(at input: Int32) -> CIFormat { .RGBAh }
+
+    override class func roi(forInput input: Int32, arguments: [String: Any]?, outputRect: CGRect) -> CGRect {
+        let reach = arguments?["reach"] as? CGFloat ?? 0
+        return outputRect.insetBy(dx: -reach, dy: -reach)
+    }
+
+    override class func process(with inputs: [CIImageProcessorInput]?, arguments: [String: Any]?,
+                                output: CIImageProcessorOutput) throws {
+        guard let input = inputs?.first, let source = input.metalTexture, let destination = output.metalTexture,
+              let command = output.metalCommandBuffer, let gpu = MetalBokeh.shared,
+              let data = arguments?["parameters"] as? Data, data.count >= MemoryLayout<MetalBokeh.Parameters>.size,
+              let encoder = command.makeComputeCommandEncoder() else { throw ExportError.render }
+        var parameters = data.withUnsafeBytes { $0.loadUnaligned(as: MetalBokeh.Parameters.self) }
+        // Core Image hands over textures with their first row at the top of their region.
+        parameters.outputTop = SIMD2(Float(output.region.minX), Float(output.region.maxY))
+        parameters.inputTop = SIMD2(Float(input.region.minX), Float(input.region.maxY))
+        encoder.setComputePipelineState(gpu.pipeline)
+        encoder.setTexture(source, index: 0)
+        encoder.setTexture(destination, index: 1)
+        encoder.setBytes(&parameters, length: MemoryLayout<MetalBokeh.Parameters>.stride, index: 0)
+        encoder.dispatchThreads(MTLSize(width: destination.width, height: destination.height, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
+        encoder.endEncoding()
+    }
 }

@@ -22,6 +22,11 @@ final class CanvasView: NSView {
     var inlineTextEditor: InlineTextEditor?
     /// The text being typed, rendered as the layer will hold it, remade only when its style changes.
     private var draftTextCache: (style: LayerTextStyle, image: CGImage)?
+    /// Each adjustment layer's last result on the GPU canvas, with what it was made from: reused while nothing under it
+    /// or about it has changed — painting above it, a redraw that changes nothing — rather than computed again.
+    private var adjustmentCache: [UUID: (key: [String], image: CIImage)] = [:]
+    /// Off, each adjustment is computed every frame, as before the cache: for comparing the two.
+    var cachesAdjustments = true
     /// The effects rendered for the text being edited, and what they were rendered from.
     private var draftEffects: (image: CGImage, effects: LayerEffects, transform: LayerTransform, rendered: CGImage, inset: CGFloat)?
     /// Which layer and text `draftEffects` were made for, so they can stand in once the edit is committed.
@@ -2828,6 +2833,11 @@ extension CanvasView {
             stacks[base] = children
             stacked.formUnion(children)
         }
+        // What the picture so far was made from, a line per part: an adjustment's cached result is good while these
+        // match. A part drawn from something in progress — a stroke, a drag, a preview, a draft — gets a line of its
+        // own each frame, which matches nothing.
+        var prints: [String] = []
+        func transient() -> String { "transient \(UUID())" }
         // Folder masks, placed once each.
         var folderMasks: [UUID: CIImage?] = [:]
         func folderMask(_ id: UUID) -> CIImage? {
@@ -2838,6 +2848,10 @@ extension CanvasView {
                 return placement.place(mask.asset.image, transform: session.displayedTransform(for: folder), mask: true)
             }
             folderMasks[id] = placed
+            if let folder = byID[id], let mask = folder.mask, mask.isEnabled {
+                prints.append(liveMaskEdit(for: id) != nil ? transient()
+                    : "folder \(id) \(ObjectIdentifier(mask.asset.image)) \(session.displayedTransform(for: folder))")
+            }
             return placed
         }
         func clippedByFolders(_ id: UUID, _ image: CIImage) -> CIImage {
@@ -3014,7 +3028,14 @@ extension CanvasView {
             return shaded.transformed(by: toGrid)
         }
         // One layer's pixels, placed, through its own mask and at its opacity — what `drawOwn` draws.
+        var ownPrint: String?
         func own(_ layer: ImageLayer) -> CIImage? {
+            ownPrint = nil
+            let image = ownImage(layer)
+            prints.append(ownPrint ?? transient())
+            return image
+        }
+        func ownImage(_ layer: ImageLayer) -> CIImage? {
             let opacity = layer.effectiveOpacity(in: byID)
             // Text being edited, as it will be committed.
             if layer.id == session.textDraft?.layerID {
@@ -3066,7 +3087,10 @@ extension CanvasView {
             let displayedLayer = session.displayedLayer(for: layer)
             let displayedAsset = displayedLayer.asset
             let displayedMask = displayedLayer.mask
-            guard displayedAsset != nil || session.filterEdit?.previewImage(for: layer.id) != nil else { return nil }
+            guard displayedAsset != nil || session.filterEdit?.previewImage(for: layer.id) != nil else {
+                ownPrint = "none \(layer.id)"
+                return nil
+            }
             // A distortion in progress, with effects: them, warped into the shape (as the Core Graphics canvas does).
             if layer.effects?.visible.isEmpty == false, let edit = session.transformEdit, !edit.mask, edit.corners != nil,
                let effects = session.effectsPreviews.preview(for: displayedLayer,
@@ -3118,6 +3142,7 @@ extension CanvasView {
                     }) {
                 let grown = effects.placement ?? LayerEffectsRenderer.placed(transform, image: effects.image, inset: effects.inset)
                 guard let image = placement.place(effects.image, transform: grown) else { unsupported = true; return nil }
+                ownPrint = "effects \(layer.id) \(ObjectIdentifier(effects.image)) \(grown) \(opacity)"
                 return GPUBlend.faded(image, opacity)
             }
             let placed: CIImage?
@@ -3140,6 +3165,18 @@ extension CanvasView {
             if let mask {
                 guard let placedMask = placement.place(mask, transform: transform, mask: true) else { unsupported = true; return nil }
                 image = GPUBlend.masked(image, by: placedMask)
+            }
+            // Drawn from the layer's own pixels and mask as they stand, with nothing in progress over them.
+            let previewing = session.shapeTransformPreview(for: layer, transform: transform) != nil
+                || session.hueSaturation?.previewImage(for: layer.id) != nil || session.levels?.previewImage(for: layer.id) != nil
+                || session.filterEdit?.previewImage(for: layer.id) != nil || session.maskDistortPreview(for: layer) != nil
+            if !previewing, let asset = displayedAsset {
+                let maskPrint = displayedMask.map {
+                    "\(ObjectIdentifier($0.asset.image)) \($0.asset.raster.map { ObjectIdentifier($0) }.debugDescription) \($0.isEnabled) "
+                        + "\(session.displayedMaskPlacement(for: layer).debugDescription) \(session.transformEdit != nil)"
+                } ?? "unmasked"
+                ownPrint = "own \(layer.id) \(ObjectIdentifier(asset.image)) \(asset.raster.map { ObjectIdentifier($0) }.debugDescription) "
+                    + "\(transform) \(maskPrint) \(opacity)"
             }
             return GPUBlend.faded(image, opacity)
         }
@@ -3207,21 +3244,52 @@ extension CanvasView {
         func drafts(after id: UUID, over image: CIImage) -> CIImage {
             guard id == session.activeLayerID else { return image }
             var result = image
-            if let shape = shapeDraftImage(placement: placement) { result = shape.composited(over: result) }
+            if let shape = shapeDraftImage(placement: placement) {
+                result = shape.composited(over: result)
+                prints.append(transient())
+            }
             if session.textDraft?.layerID == nil, let text = draftText, let placed = placement.place(text.image, transform: text.transform) {
                 result = placed.composited(over: result)
                 drewNewText = true
+                prints.append(transient())
             }
             return result
         }
+        // An adjustment layer as it's drawn: its settings, its own mask, opacity and blend mode.
+        func adjustmentPrint(_ layer: ImageLayer, _ adjustment: LayerAdjustment) -> String {
+            if liveMaskEdit(for: layer.id) != nil { return transient() }
+            let mask = layer.mask.map { "\(ObjectIdentifier($0.asset.image)) \($0.isEnabled)" } ?? "unmasked"
+            return "adjustment \(layer.id) \(adjustment) \(mask) \(layer.transform) \(layer.effectiveOpacity(in: byID)) "
+                + "\(session.displayedBlendMode(for: layer))"
+        }
+        prints.append("frame \(placement.mapping) \(placement.scale) \(hasHDR) \(document.size)")
+        var cached = Set<UUID>()
+        defer { if cachesAdjustments { adjustmentCache = adjustmentCache.filter { cached.contains($0.key) } } }
         var result = CIImage.empty()
         for id in ids where !stacked.contains(id) {
             guard let layer = byID[id] else { continue }
             let mode = session.displayedBlendMode(for: layer)
+            prints.append("layer \(id) \(mode)")
             if let adjustment = layer.adjustment {
                 guard layer.maskSourceID == nil else { continue }
+                // Its folders' masks are part of what it's drawn through.
+                var folder = layer.parentID, depth = 0
+                while let current = folder, depth < 64 { _ = folderMask(current); folder = byID[current]?.parentID; depth += 1 }
+                prints.append(adjustmentPrint(layer, adjustment))
+                let steady = !prints.contains { $0.hasPrefix("transient") }
+                if cachesAdjustments, steady, let entry = adjustmentCache[id], entry.key == prints {
+                    result = entry.image
+                    cached.insert(id)
+                    continue
+                }
                 guard let changed = adjusted(result, by: layer, adjustment: adjustment, folders: true) else { return nil }
-                result = changed
+                if cachesAdjustments, steady, let kept = placement.renderer.keep(changed) {
+                    adjustmentCache[id] = (prints, kept)
+                    cached.insert(id)
+                    result = kept
+                } else {
+                    result = changed
+                }
                 continue
             }
             if let children = stacks[id] {
@@ -3236,9 +3304,11 @@ extension CanvasView {
                 for childID in children {
                     guard let child = byID[childID] else { continue }
                     if let adjustment = child.adjustment {
+                        prints.append(adjustmentPrint(child, adjustment))
                         guard let changed = adjusted(group, by: child, adjustment: adjustment, folders: false) else { return nil }
                         group = changed
                     } else if let image = own(child) {
+                        prints.append("layer \(childID) \(session.displayedBlendMode(for: child))")
                         group = GPUBlend.blend(image, over: group, mode: session.displayedBlendMode(for: child))
                     } else if unsupported { return nil }
                     group = drafts(after: childID, over: group)
