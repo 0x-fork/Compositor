@@ -11,7 +11,10 @@ nonisolated final class MetalBokeh: @unchecked Sendable {
     static let shared: MetalBokeh? = try? MetalBokeh()
     /// The widest disc radius gathered at full size, in pixels.
     static let largestRadius: CGFloat = 20
+    let device: MTLDevice
     let pipeline: MTLComputePipelineState
+    /// Round, Hexagon and Oval discs are the same shape at every pixel: their weights are worked out once, into a table.
+    let weights: MTLComputePipelineState
 
     struct Parameters {
         var radius: Float
@@ -26,10 +29,13 @@ nonisolated final class MetalBokeh: @unchecked Sendable {
     }
 
     private init() throws {
-        guard let device = MTLCreateSystemDefaultDevice(),
-              let function = try device.makeLibrary(source: Self.source, options: nil).makeFunction(name: "bokeh")
+        guard let device = MTLCreateSystemDefaultDevice() else { throw ExportError.render }
+        let library = try device.makeLibrary(source: Self.source, options: nil)
+        guard let function = library.makeFunction(name: "bokeh"), let weights = library.makeFunction(name: "discWeights")
         else { throw ExportError.render }
+        self.device = device
         pipeline = try device.makeComputePipelineState(function: function)
+        self.weights = try device.makeComputePipelineState(function: weights)
     }
 
     /// `image` blurred into discs of `radius` pixels within `extent`, the result covering `extent`.
@@ -79,9 +85,31 @@ float aperture(float2 o, uint shape, float2 outward) {
     return length(o);
 }
 
+// A sample's weight `o` (in disc radii) from the disc's middle: inside the aperture, more toward its rim with Ring.
+float discWeight(float2 o, float radius, constant Parameters &p, float2 outward) {
+    float d = aperture(o, p.shape, outward);
+    float inside = 1.0 - smoothstep(1.0 - 1.0 / radius, 1.0, d);
+    if (inside <= 0.0) return 0.0;
+    // A lens that draws its discs with a bright rim, as many fast ones do.
+    return inside * (1.0 + p.ring * 2.5 * smoothstep(0.6, 0.97, d));
+}
+
+// The weights every pixel of a Round, Hexagon or Oval disc shares, a row of them per `dy`.
+kernel void discWeights(device float *table [[buffer(1)]],
+                        constant Parameters &p [[buffer(0)]],
+                        uint index [[thread_position_in_grid]]) {
+    float radius = max(p.radius, 0.5);
+    int reachX = int(ceil(radius)), reachY = int(ceil(radius * (p.shape == 2 ? 1.62 : 1.0)));
+    int columns = reachX * 2 + 1;
+    if (index >= uint(columns * (reachY * 2 + 1))) return;
+    int dx = int(index) % columns - reachX, dy = int(index) / columns - reachY;
+    table[index] = discWeight(float2(dx, dy) / radius, radius, p, float2(0));
+}
+
 kernel void bokeh(texture2d<float, access::sample> image [[texture(0)]],
                   texture2d<float, access::write> result [[texture(1)]],
                   constant Parameters &p [[buffer(0)]],
+                  device const float *table [[buffer(1)]],
                   uint2 pixel [[thread_position_in_grid]]) {
     if (pixel.x >= result.get_width() || pixel.y >= result.get_height()) return;
     constexpr sampler linear(coord::pixel, address::clamp_to_edge, filter::linear);
@@ -94,17 +122,15 @@ kernel void bokeh(texture2d<float, access::sample> image [[texture(0)]],
     float2 outward = fromMiddle * min(1.0, length(fromMiddle));
     float radius = max(p.radius, 0.5);
     int reachX = int(ceil(radius)), reachY = int(ceil(radius * (p.shape == 2 ? 1.62 : 1.0)));
-    float soft = 1.0 / radius;
+    int columns = reachX * 2 + 1;
     float4 sum = 0;
     float total = 0;
     for (int dy = -reachY; dy <= reachY; dy++) {
         for (int dx = -reachX; dx <= reachX; dx++) {
-            float2 o = float2(dx, dy) / radius;
-            float d = aperture(o, p.shape, outward);
-            float inside = 1.0 - smoothstep(1.0 - soft, 1.0, d);
-            if (inside <= 0.0) continue;
-            // A lens that draws its discs with a bright rim, as many fast ones do.
-            float weight = inside * (1.0 + p.ring * 2.5 * smoothstep(0.6, 0.97, d));
+            // Cat's Eye's discs change shape across the frame; the others' weights are in the table.
+            float weight = p.shape == 3 ? discWeight(float2(dx, dy) / radius, radius, p, outward)
+                : table[(dy + reachY) * columns + dx + reachX];
+            if (weight <= 0.0) continue;
             sum += image.sample(linear, at + float2(dx, dy)) * weight;
             total += weight;
         }
@@ -134,10 +160,22 @@ final class BokehKernel: CIImageProcessorKernel {
         // Core Image hands over textures with their first row at the top of their region.
         parameters.outputTop = SIMD2(Float(output.region.minX), Float(output.region.maxY))
         parameters.inputTop = SIMD2(Float(input.region.minX), Float(input.region.maxY))
+        let radius = max(parameters.radius, 0.5)
+        let reachX = Int(radius.rounded(.up)), reachY = Int((radius * (parameters.shape == 2 ? 1.62 : 1)).rounded(.up))
+        let count = (reachX * 2 + 1) * (reachY * 2 + 1)
+        guard let table = gpu.device.makeBuffer(length: count * MemoryLayout<Float>.stride, options: .storageModePrivate) else {
+            encoder.endEncoding()
+            throw ExportError.render
+        }
+        encoder.setBytes(&parameters, length: MemoryLayout<MetalBokeh.Parameters>.stride, index: 0)
+        encoder.setBuffer(table, offset: 0, index: 1)
+        if parameters.shape != 3 {
+            encoder.setComputePipelineState(gpu.weights)
+            encoder.dispatchThreads(MTLSize(width: count, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 64, height: 1, depth: 1))
+        }
         encoder.setComputePipelineState(gpu.pipeline)
         encoder.setTexture(source, index: 0)
         encoder.setTexture(destination, index: 1)
-        encoder.setBytes(&parameters, length: MemoryLayout<MetalBokeh.Parameters>.stride, index: 0)
         encoder.dispatchThreads(MTLSize(width: destination.width, height: destination.height, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         encoder.endEncoding()
