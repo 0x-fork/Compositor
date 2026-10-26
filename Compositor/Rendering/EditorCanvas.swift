@@ -2783,6 +2783,11 @@ extension CanvasView {
             for index in document.layers.indices where document.layers[index].isGroup != true && !underneath.contains(document.layers[index].id) {
                 document.layers[index].isVisible = false
             }
+            // Its own mask and opacity go on over it on the canvas.
+            if let index = document.layers.firstIndex(where: { $0.id == id }) {
+                document.layers[index].mask?.isEnabled = false
+                document.layers[index].opacity = 1
+            }
             let width = Int(document.size.width.rounded()), height = Int(document.size.height.rounded())
             guard let context = try? BrushRaster.context(width: width, height: height, mask: false) else { return }
             self.session.drawLiveComposite(document, in: context)
@@ -3240,6 +3245,11 @@ extension CanvasView {
         }
         // An adjustment re-colors what's under it, through its own mask and its folders' masks, at its opacity.
         func adjusted(_ below: CIImage, by layer: ImageLayer, adjustment: LayerAdjustment, folders: Bool) -> CIImage? {
+            if folders, adjustment.kind == .lensEffects, let exact = lensExact[layer.id], exact.key == lensLatest[layer.id],
+               let placed = placement.place(exact.image, transform: LayerTransform(origin: .zero, size: document.size)) {
+                // Worked out with its folders, blend mode and the layers under it, without its own mask and opacity.
+                return covered(placed, over: below, by: layer, folders: false, opacity: layer.opacity)
+            }
             // Lens Effects works on what's below as pixels, as the export does: the canvas places layers with nearest sampling,
             // which its spikes' rotations would carry through, keeping hard bright pixels the export smooths.
             var source = below
@@ -3262,6 +3272,10 @@ extension CanvasView {
                     .applyingFilter("CIBlendWithAlphaMask", parameters: [kCIInputBackgroundImageKey: CIImage.empty(),
                                                                          kCIInputMaskImageKey: below])
             }
+            return covered(changed, over: below, by: layer, folders: folders, opacity: layer.effectiveOpacity(in: byID))
+        }
+        // `changed` shown over `below` through the layer's mask (as it's being painted, too), its folders' and `opacity`.
+        func covered(_ changed: CIImage, over below: CIImage, by layer: ImageLayer, folders: Bool, opacity: Double) -> CIImage {
             var coverage: CIImage?
             func multiply(_ mask: CIImage) {
                 coverage = coverage.map {
@@ -3282,7 +3296,6 @@ extension CanvasView {
                     depth += 1
                 }
             }
-            let opacity = layer.effectiveOpacity(in: byID)
             if opacity < 1 {
                 multiply(CIImage(color: CIColor(red: opacity, green: opacity, blue: opacity)))
             }
@@ -3340,17 +3353,17 @@ extension CanvasView {
                 // Its folders' masks are part of what it's drawn through.
                 var folder = layer.parentID, depth = 0
                 while let current = folder, depth < 64 { _ = folderMask(current); folder = byID[current]?.parentID; depth += 1 }
-                prints.append(adjustmentPrint(layer, adjustment))
-                let steady = !prints.contains { $0.hasPrefix("transient") }
                 if adjustment.kind == .lensEffects {
-                    lensLatest[id] = prints
-                    if steady, let exact = lensExact[id], exact.key == prints,
-                       let placed = placement.place(exact.image, transform: LayerTransform(origin: .zero, size: document.size)) {
-                        result = placed
-                        continue
-                    }
-                    if steady { makeLensExact(id, key: prints) }
+                    // The exact effect doesn't hang on the layer's own mask or opacity, which go on over it as they're
+                    // painted and dragged, so neither leaves the exact one.
+                    let key = prints + ["lens \(id) \(adjustment) \(layer.transform) \(layer.effectiveOpacity(in: byID) / max(layer.opacity, 1e-6)) "
+                                        + "\(session.displayedBlendMode(for: layer))"]
+                    lensLatest[id] = key
+                    if !key.contains(where: { $0.hasPrefix("transient") }), lensExact[id]?.key != key { makeLensExact(id, key: key) }
                 }
+                prints.append(adjustmentPrint(layer, adjustment))
+                if adjustment.kind == .lensEffects { prints.append(lensExact[id]?.key == lensLatest[id] ? "exact" : "quick") }
+                let steady = !prints.contains { $0.hasPrefix("transient") }
                 if cachesAdjustments, steady, let entry = adjustmentCache[id], entry.key == prints {
                     result = entry.image
                     cached.insert(id)
