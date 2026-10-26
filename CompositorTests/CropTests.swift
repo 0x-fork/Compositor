@@ -23,12 +23,14 @@ struct CropTests {
         session.cropRatioChoice = "9:20"
         session.changeCropRatio()
         #expect(session.cropRect == CGRect(x: 0, y: -700, width: 900, height: 2000))
-        session.cropRatioChoice = "Original"
+        session.cropRatioChoice = "Canvas"
         #expect(session.cropRatio == 1.5)
         session.cropRatioChoice = "Free"
         #expect(session.cropRatio == nil)
         session.cropRatioChoice = "4:3"
         #expect(session.cropRatio == CGFloat(4) / 3)
+        session.cropRatioChoice = "2.39:1"
+        #expect(session.cropRatio == 2.39)
         session.cropRatioChoice = "1:30000"
         session.changeCropRatio()
         let rect = try #require(session.cropRect)

@@ -228,7 +228,7 @@ extension EditorSession {
     }
     var cropRatio: CGFloat? {
         switch cropRatioChoice {
-        case "Original": return document.map { CGFloat($0.width) / CGFloat($0.height) }
+        case "Canvas": return document.map { CGFloat($0.width) / CGFloat($0.height) }
         default: return CropGeometry.ratio(cropRatioChoice)
         }
     }

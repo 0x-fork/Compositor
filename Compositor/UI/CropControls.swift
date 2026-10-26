@@ -5,14 +5,19 @@ import SwiftUI
 struct CropControls: View {
     @Bindable var session: EditorSession
     @State private var showsCustomRatio = false
-    @State private var customRatio = "9:20"
-    private let ratios = ["Free", "Original", "1:1", "4:3", "3:4", "16:9", "9:16", "9:20"]
+    @State private var customRatio = "4:5"
+    private let ratioGroups = [["Free", "Canvas"], ["1:1"], ["4:3", "16:9", "2.39:1"], ["3:4", "9:16"]]
+    private var ratios: [String] { ratioGroups.flatMap { $0 } }
 
     var body: some View {
         HStack(spacing: 14) {
             Text("Crop").font(ToolHeaderStyle.titleFont)
             Picker("Ratio", selection: ratioSelection) {
-                ForEach(ratios, id: \.self) { Text($0) }
+                // Grouped by shape: free and the canvas's own proportions, square, wide, tall.
+                ForEach(ratioGroups.indices, id: \.self) { index in
+                    if index > 0 { Divider() }
+                    ForEach(ratioGroups[index], id: \.self) { Text($0) }
+                }
                 if !ratios.contains(session.cropRatioChoice) {
                     Text(session.cropRatioChoice).tag(session.cropRatioChoice)
                 }
@@ -25,7 +30,7 @@ struct CropControls: View {
                         TextField("Width:Height", text: $customRatio)
                             .textFieldStyle(.roundedBorder)
                             .onSubmit { applyCustomRatio() }
-                        Text("Width:height, such as 9:20 or 2.5:1")
+                        Text("Width:height, such as 4:5 or 3:2")
                             .font(.caption).foregroundStyle(.secondary)
                         if CropGeometry.ratio(customRatio) == nil {
                             Text("Enter a positive ratio within the document size limits.")
