@@ -476,7 +476,7 @@ final class CanvasView: NSView {
     /// once that's done.
     private func keepColorRangeCursor(after delay: TimeInterval = 0) {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, self.session.colorRange != nil, self.pointerOverCanvas else { return }
+            guard let self, self.session.colorRange != nil, !self.spaceHeld, self.pointerOverCanvas else { return }
             self.pickCursor.set()
         }
     }
@@ -629,7 +629,7 @@ final class CanvasView: NSView {
             // cursor here when picking starts or ends. An empty canvas leaves the form's cursor alone.
             if session.document != nil, let window,
                bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) {
-                if picking { pickCursor.set() } else { restoreToolCursor() }
+                if spaceHeld { NSCursor.openHand.set() } else if picking { pickCursor.set() } else { restoreToolCursor() }
             }
             // Color Range's panel appears, and takes the focus, a moment after it opens.
             if session.colorRange != nil { keepColorRangeCursor(); keepColorRangeCursor(after: 0.15) }
@@ -1460,6 +1460,16 @@ final class CanvasView: NSView {
         context.restoreGState()
     }
 
+    /// The cursor for where the pointer is now, set straight away rather than when it next moves: the hand while Space
+    /// is held, otherwise the tool's own (or the eyedropper's, picking).
+    private func refreshPointerCursor() {
+        guard session.document != nil, dragCursor == nil, let window,
+              bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) else { return }
+        if spaceHeld { NSCursor.openHand.set() }
+        else if picking { pickCursor.set() }
+        else { restoreToolCursor() }
+    }
+
     /// Puts the current tool's cursor back after picking, the way the cursor rects would on entering the canvas.
     private func restoreToolCursor() {
         if session.hueTargeting { NSCursor.resizeLeftRight.set() }
@@ -1485,7 +1495,8 @@ final class CanvasView: NSView {
     override func resetCursorRects() {
         guard session.document != nil else { return }
         if let dragCursor { addCursorRect(bounds, cursor: dragCursor); return }
-        if picking {
+        // Space held pans, whatever the tool: the hand, not the eyedropper or a selection tool's cursor.
+        if picking, !spaceHeld {
             addCursorRect(bounds, cursor: pickCursor)
             keepColorRangeCursor()
             return
@@ -1626,6 +1637,13 @@ final class CanvasView: NSView {
             session.updateCameraRawReadout(at: session.viewport.documentPoint(from: point, documentSize: document.size))
         }
         optionHeld = event.modifierFlags.contains(.option)
+        // Space held: the hand stays put as the pointer moves, rather than the tool putting its own cursor back.
+        if spaceHeld {
+            NSCursor.openHand.set()
+            brushPointer = convert(event.locationInWindow, from: nil)
+            updateBrushCursor()
+            return
+        }
         if picking { pickCursor.set(); return }
         if session.tool.isSelectionTool {
             // Keys may have changed while the app was in the background.
@@ -1646,7 +1664,8 @@ final class CanvasView: NSView {
     }
     override func cursorUpdate(with event: NSEvent) {
         guard session.document != nil else { return }
-        if picking { pickCursor.set() }
+        if spaceHeld, dragCursor == nil { NSCursor.openHand.set() }
+        else if picking { pickCursor.set() }
         else if session.tool.isSelectionTool, !spaceHeld { lassoCursor.set() }
         // Cursor-update events carry no modifier flags (AppKit sends one after every key change), so read
         // the keys as they are now; the event's flags would undo Option's duplicate cursor straight away.
@@ -2324,6 +2343,7 @@ final class CanvasView: NSView {
             spaceHeld = true
             updateBrushCursor()
             window?.invalidateCursorRects(for: self)
+            refreshPointerCursor()
         } else if event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
             switch event.charactersIgnoringModifiers?.lowercased() {
             case "x": session.swapPaletteColors()
@@ -2367,6 +2387,7 @@ final class CanvasView: NSView {
             spaceHeld = false
             updateBrushCursor()
             window?.invalidateCursorRects(for: self)
+            refreshPointerCursor()
         } else { super.keyUp(with: event) }
     }
     override func resignFirstResponder() -> Bool {
