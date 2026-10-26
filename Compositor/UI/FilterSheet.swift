@@ -411,6 +411,8 @@ struct FilterSheet: View {
                 .help("Which way the copies step")
             control("Blur", \.lens.prismBlur, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
                 .help("Soften the copies, more the farther they're pushed")
+            control("Fringe", \.lens.prismFringe, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("Split each copy's red and blue apart, as glass does; 0 keeps the copies crisp")
             HStack(spacing: 10) {
                 Text("Direction")
                 Picker("Direction", selection: Binding(get: { settings.lens.prismBothWays }, set: { new in update { $0.lens.prismBothWays = new } })) {
