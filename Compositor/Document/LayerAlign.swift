@@ -117,8 +117,9 @@ extension EditorSession {
     /// Align lines things up with the selection when there is one, with the canvas when one thing is selected, and
     /// otherwise with the box around them all.
     /// Cheap enough for menus and buttons to ask on every redraw; the commands themselves find what moves.
-    var canAlignLayers: Bool { canEditLayers && !selectedLayerIDs.isEmpty }
-    var canDistributeLayers: Bool { canEditLayers && selectedLayerIDs.count > 2 }
+    // Aligning commits a pending move first, so a move in progress leaves it available.
+    var canAlignLayers: Bool { canEditLayersOnceTransformCommitted && transformEdit?.corners == nil && !selectedLayerIDs.isEmpty }
+    var canDistributeLayers: Bool { canAlignLayers && selectedLayerIDs.count > 2 }
 
     func alignLayers(_ alignment: LayerAlignment) {
         commitTransform()
