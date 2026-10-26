@@ -60,7 +60,7 @@ struct TransformInspector: View {
             // Numbers describe an ordinary transform; while distorted, the handles are the controls.
             }.disabled((!session.canTransform && session.transformEdit == nil) || session.transformEdit?.corners != nil)
                 .padding(.horizontal, 18)
-          }.scrollIndicators(.hidden)
+          }.scrollIndicators(.never)
           // Only an edit that waits for them — typed values, ⌘T, a distortion — has anything to cancel or apply. A
           // handle drag applies itself on release, and ghosted buttons after it read as the pixels being resampled,
           // which they never are. Left in place unseen, so Escape and Return still reach a drag in progress.
@@ -115,7 +115,7 @@ struct TransformInspector: View {
     }
 }
 
-private struct TransformValueField: View {
+struct TransformValueField: View {
     let label: String
     var suffix: String? = nil
     let value: CGFloat

@@ -87,6 +87,50 @@ struct FilterSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             case .gaussianBlur:
                 control("Radius", \.radius, range: 0.1...250, unit: "px", decimals: 1, logarithmic: true)
+                Toggle("Preserve Transparency", isOn: flag(\.preserveTransparency))
+                    .help("Blur only the colors, keeping the layer's outline and transparency as they are")
+            case .progressiveBlur:
+                Text("Click and drag two points on canvas")
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Text("Shape")
+                    Picker("Shape", selection: flag(\.progressiveRadial)) {
+                        Text("Linear").tag(false)
+                        Text("Radial").tag(true)
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    .help("Linear blurs along the line; Radial keeps the start sharp and blurs outwards")
+                }
+                control("From", \.progressiveFrom, range: 0...250, unit: "px", decimals: 1, logarithmic: false)
+                    .help("The blur where the line starts")
+                control("To", \.progressiveTo, range: 0...250, unit: "px", decimals: 1, logarithmic: false)
+                    .help("The blur where the line ends, and past it")
+                Toggle("Invert", isOn: flag(\.progressiveInverted))
+                    .help("Swap From and To: blur the start and sharpen toward the end")
+            case .rgbSplit:
+                HStack(spacing: 10) {
+                    Text("Shape")
+                    Picker("Shape", selection: flag(\.rgbSplitRadial)) {
+                        Text("Linear").tag(false)
+                        Text("Radial").tag(true)
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    .help("Linear splits along one direction; Radial splits outwards from a center, sharp there")
+                }
+                if settings.rgbSplitRadial {
+                    Text("Click or drag on the canvas to move the center")
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                control("Distance", \.rgbSplitDistance, range: 0...200, unit: "px", decimals: 0, logarithmic: false)
+                    .help("How far the colors spread apart, red one way and blue the other")
+                control("Blur", \.rgbSplitBlur, range: 0...400, unit: "px", decimals: 0, logarithmic: false)
+                    .help("Smear the split into streaks along its direction")
+                if !settings.rgbSplitRadial {
+                    control("Angle", \.rgbSplitAngle, range: -180...180, unit: "°", decimals: 0, logarithmic: false)
+                        .help("Which way the colors spread")
+                }
+            case .lensEffects:
+                lensEffectsControls
             case .motionBlur:
                 control("Angle", \.angle, range: -90...90, unit: "°", decimals: 0, logarithmic: false)
                 control("Distance", \.distance, range: 1...2000, unit: "px", decimals: 0, logarithmic: true)
@@ -103,6 +147,8 @@ struct FilterSheet: View {
                 Toggle("Monochromatic", isOn: flag(\.monochromatic))
             case .dither:
                 ditherControls
+            case .scanlines:
+                scanlinesControls
             case .vignette:
                 HStack(spacing: 8) {
                     Text("Color").frame(width: 95, alignment: .leading)
@@ -151,6 +197,15 @@ struct FilterSheet: View {
             Divider()
             HStack {
                 Button("Cancel") { session.cancelFilter() }.configuredNativeShortcut(.escape)
+                // The utility beside the effect: the layer's own channels, unshifted, as layers for Export As › Channel Pack.
+                // Not on an RGB Split adjustment layer, which has no pixels of its own to split.
+                if edit?.kind == .rgbSplit, session.adjustmentOriginal == nil {
+                    Button("Split to Layers") {
+                        session.cancelFilter()
+                        session.splitChannels()
+                    }
+                    .help("Split the layer's original channels into four grayscale layers, Red, Green, Blue and Alpha, for Export As › Channel Pack. Color under fully transparent pixels can't be recovered")
+                }
                 Spacer()
                 // While the preview is being worked out (Remove Background's mask, Content-Aware Fill) OK waits, so
                 // the panel says what it is waiting for rather than showing a disabled button and nothing else.
@@ -196,16 +251,6 @@ struct FilterSheet: View {
         if dither.style == .ascii {
             control("Text Size", \.dither.textSize, range: DitherSettings.textSizeRange, unit: "px", decimals: 0, logarithmic: false)
                 .help("The height of each line of characters")
-        }
-        if dither.style == .scanlines {
-            control("Line Spacing", \.dither.lineSpacing, range: DitherSettings.lineSpacingRange, unit: "px", decimals: 0, logarithmic: false)
-                .help("How far apart the screen's lines are")
-            control("Glow", \.dither.glow, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
-                .help("Light blooming around the lines, like a CRT's phosphors")
-            control("Dots", \.dither.dots, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
-                .help("Break the lines into glowing beads")
-            control("Wobble", \.dither.wobble, range: DitherSettings.wobbleRange, unit: "px", decimals: 0, logarithmic: false)
-                .help("Make the lines waver sideways down the screen, like a CRT losing sync")
         }
         if dither.style.isHalftone {
             control("Cell Size", \.dither.cellSize, range: DitherSettings.cellSizeRange, unit: "px", decimals: 0, logarithmic: false)
@@ -260,6 +305,46 @@ struct FilterSheet: View {
         }
     }
 
+    @ViewBuilder private var scanlinesControls: some View {
+        let lines = settings.scanlines
+        control("Line Spacing", \.scanlines.lineSpacing, range: ScanlinesSettings.lineSpacingRange, unit: "px", decimals: 0, logarithmic: false)
+            .help("How far apart the screen's lines are")
+        control("Thickness", \.scanlines.thickness, range: 5...100, unit: "%", decimals: 0, logarithmic: false)
+            .help("How much of the gap a bright line fills; dimmer parts draw it thinner")
+        control("Glow", \.scanlines.glow, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+            .help("Light blooming around the lines, like a CRT's phosphors")
+        control("Dots", \.scanlines.dots, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+            .help("Break the lines into beads where the picture is darker than this, blending into solid lines where it's brighter")
+        control("Displace", \.scanlines.displace, range: ScanlinesSettings.displaceRange, unit: "px", decimals: 0, logarithmic: false)
+            .help("Lift the lines where the picture is bright, or lower them when negative, so they swell into its shapes")
+        control("Smoothness", \.scanlines.smoothness, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+            .help("How far the brightness is smoothed before it displaces the lines, from sharp ridges to rounded hills")
+        control("Threshold", \.scanlines.threshold, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+            .help("Draw no line where the picture is darker than this, leaving the screen dark")
+        control("Wobble", \.scanlines.wobble, range: ScanlinesSettings.wobbleRange, unit: "px", decimals: 0, logarithmic: false)
+            .help("Make the lines waver sideways down the screen, like a CRT losing sync")
+        control("Color Split", \.scanlines.split, range: ScanlinesSettings.splitRange, unit: "px", decimals: 0, logarithmic: false)
+            .help("Move the red and blue apart, for colored fringes on the lines")
+        control("Density", \.scanlines.density, range: -100...100, unit: "", decimals: 0, logarithmic: false)
+            .help("Darker or lighter before the lines are drawn")
+        control("Contrast", \.scanlines.contrast, range: -100...100, unit: "", decimals: 0, logarithmic: false)
+        control("Black Level", \.scanlines.blackLevel, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+            .help("How bright the lines are where the picture is black, so they show even over black")
+        Picker("Colors", selection: Binding(get: { lines.colors }, set: { new in update { $0.scanlines.colors = new } })) {
+            ForEach(DitherColors.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+        }
+        .fixedSize()
+        if lines.colors == .twoColors {
+            HStack(spacing: 8) {
+                Text("Dark")
+                swatch(lines.dark, help: "Choose the screen's color") { session.openDitherColorPicker(light: false) }
+                Text("Light").padding(.leading, 10)
+                swatch(lines.light, help: "Choose the lines' color") { session.openDitherColorPicker(light: true) }
+                Spacer()
+            }
+        }
+    }
+
     private func swatch(_ color: AdjustmentColor, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -271,6 +356,81 @@ struct FilterSheet: View {
         }
         .buttonStyle(.plain)
         .help(help)
+    }
+
+    /// Lens Effects: which effect, then its own settings.
+    @ViewBuilder private var lensEffectsControls: some View {
+        HStack(spacing: 10) {
+            Text("Effect")
+            Picker("Effect", selection: Binding(get: { settings.lens.effect }, set: { new in update { $0.lens.effect = new } })) {
+                ForEach(LensEffect.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .labelsHidden().fixedSize()
+        }
+        switch settings.lens.effect {
+        case .anamorphicFlare:
+            control("Amount", \.lens.flareAmount, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+            control("Length", \.lens.flareLength, range: 1...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How far the streaks reach across the picture")
+            control("Threshold", \.lens.threshold, range: 50...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How bright a light has to be to flare; near 100, only the biggest, brightest spots")
+            control("Blue", \.lens.flareBlue, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How far the lens's coatings turn each streak blue along its length; none keeps the light's own color")
+        case .starburst:
+            control("Amount", \.lens.starAmount, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+            control("Length", \.lens.starLength, range: 2...40, unit: "%", decimals: 0, logarithmic: false)
+                .help("How far the spikes reach")
+            control("Threshold", \.lens.threshold, range: 50...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How bright a light has to be to sparkle; near 100, only the biggest, brightest spots")
+            control("Angle", \.lens.starAngle, range: -180...180, unit: "°", decimals: 0, logarithmic: false)
+            HStack(spacing: 10) {
+                Text("Points")
+                Picker("Points", selection: Binding(get: { settings.lens.starPoints }, set: { new in update { $0.lens.starPoints = new } })) {
+                    ForEach(LensEffectSettings.starPointChoices, id: \.self) { Text("\($0)").tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                .help("How many spikes each light has, as the lens's aperture blades make them")
+            }
+        case .mist:
+            control("Strength", \.lens.mistStrength, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How much light scatters: a soft halo around bright areas, and gently lifted shadows")
+            control("Size", \.lens.mistSize, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How far the light spreads")
+        case .prism:
+            control("Amount", \.lens.prismAmount, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+            control("Copies", \.lens.prismCopies, range: 1...8, unit: "", decimals: 0, logarithmic: false)
+                .help("How many times the picture echoes, each fainter")
+            control("Offset", \.lens.prismOffset, range: 0...50, unit: "%", decimals: 0, logarithmic: false)
+                .help("How far apart the copies are")
+            control("Angle", \.lens.prismAngle, range: -180...180, unit: "°", decimals: 0, logarithmic: false)
+                .help("Which way the copies step")
+            control("Blur", \.lens.prismBlur, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("Soften the copies, more the farther they're pushed")
+            HStack(spacing: 10) {
+                Text("Direction")
+                Picker("Direction", selection: Binding(get: { settings.lens.prismBothWays }, set: { new in update { $0.lens.prismBothWays = new } })) {
+                    Text("One Way").tag(false)
+                    Text("Both Ways").tag(true)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                .help("Copies to one side of the picture, or out to both")
+            }
+        case .bokeh:
+            control("Size", \.lens.bokehRadius, range: LensEffectSettings.bokehSizes, unit: "%", decimals: 1, logarithmic: false)
+                .help("How far out of focus: the size of each disc")
+            control("Brightness", \.lens.bokehBrightness, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("How brightly lights open into discs")
+            control("Ring", \.lens.bokehRing, range: 0...100, unit: "%", decimals: 0, logarithmic: false)
+                .help("Light gathered at each disc's rim, as some lenses draw it")
+            HStack(spacing: 10) {
+                Text("Shape")
+                Picker("Shape", selection: Binding(get: { settings.lens.bokehShape }, set: { new in update { $0.lens.bokehShape = new } })) {
+                    ForEach(BokehShape.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .labelsHidden().fixedSize()
+                .help("The aperture's shape: round wide open, a hexagon of blades, an anamorphic oval, or a cat's eye toward the edges")
+            }
+        }
     }
 
     private func flag(_ key: WritableKeyPath<FilterSettings, Bool>) -> Binding<Bool> {
